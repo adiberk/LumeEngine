@@ -74,7 +74,15 @@ struct DeinterlaceTests {
                 break
             }
         }
-        guard case .endOfStream? = await decodeEvents.next() else {
+        // `.downgradedToSoftware` is informational, and expected here:
+        // VideoToolbox refuses field-coded H.264, so FFmpeg decodes this
+        // fixture in software and the decoder says so.
+        var reachedEndOfStream = false
+        while let event = await decodeEvents.next() {
+            if case .endOfStream = event { reachedEndOfStream = true; break }
+            if case .failed = event { break }
+        }
+        guard reachedEndOfStream else {
             decoder.shutdown()
             throw EngineError(code: .decodeFailed, message: "decoder never reached EOF")
         }
