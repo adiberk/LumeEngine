@@ -5,9 +5,9 @@
     "sha256": "cf38e0e28c7e5605942c4a77755349b0145804a397af37eb1fb4c77cb237f635"
   },
   "dav1d": {
-    "version": "1.5.1",
-    "url": "https://code.videolan.org/videolan/dav1d/-/archive/1.5.1/dav1d-1.5.1.tar.bz2",
-    "status": "planned"
+    "version": "1.5.4",
+    "url": "https://downloads.videolan.org/pub/videolan/dav1d/1.5.4/dav1d-1.5.4.tar.xz",
+    "sha256": "686616b7c69eb88d44459391ab25cac13b6647a3b288835c5784e71c1514a5c5"
   },
   "libass": {
     "version": "0.17.4",

@@ -2,6 +2,7 @@ import CoreMedia
 import CoreVideo
 import Foundation
 import Testing
+import VideoToolbox
 @testable import LumeEngineCore
 
 @Suite("Decoders", .serialized)
@@ -100,6 +101,74 @@ struct DecoderTests {
             kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
         ]
         #expect(formats.isSubset(of: allowed), "unexpected pixel formats: \(formats)")
+    }
+
+    /// AV1 is the codec where "try hardware, fall back to software" used to
+    /// have nothing to fall back to: FFmpeg's native AV1 decoder only drives
+    /// VideoToolbox, most Apple chips have no AV1 hardware, and the stream
+    /// played as a black picture with sound. dav1d is the software path.
+    @Test("video: AV1 decodes with or without AV1 hardware", .timeLimit(.minutes(1)))
+    func av1Decode() async throws {
+        var (demuxer, info, demuxEvents) = try await open("av1.mkv")
+        defer { demuxer.shutdown() }
+
+        let track = try #require(info.videoTracks.first)
+        #expect(track.codecName == "av1")
+        let parameters = try #require(demuxer.codecParameters(forStream: track.index))
+
+        let packets = Channel<Packet>(capacity: 64)
+        let frames = Channel<VideoFrame>(capacity: 16, measure: { $0.duration })
+        demuxer.attach(channel: packets, toStream: track.index)
+
+        let decoder = VideoDecoder(parameters: parameters, input: packets, output: frames)
+        var decodeEvents = decoder.events.makeAsyncIterator()
+        decoder.start()
+        demuxer.resume()
+
+        let collector = ChannelDrain(frames, into: [DecodedVideoFrame]()) { collected, frame in
+            collected.append(DecodedVideoFrame(
+                pts: frame.pts,
+                width: frame.width,
+                height: frame.height,
+                format: CVPixelBufferGetPixelFormatType(frame.pixelBuffer),
+                hardware: frame.isHardwareDecoded
+            ))
+        }
+
+        while let event = await demuxEvents.next() {
+            if case .endOfStream = event {
+                decoder.signalEndOfStream()
+                break
+            }
+        }
+        var failure: EngineError?
+        var reachedEndOfStream = false
+        while let event = await decodeEvents.next() {
+            if case .failed(let error) = event { failure = error; break }
+            if case .endOfStream = event { reachedEndOfStream = true; break }
+        }
+        let hardwareActive = decoder.isHardwareActive
+        decoder.shutdown()
+
+        #expect(failure == nil, "AV1 must decode on this host: \(failure.map(String.init(describing:)) ?? "")")
+        #expect(reachedEndOfStream)
+        let collected = await collector.value
+        #expect(collected.count >= 90, "4 s @ 24 fps ≈ 96 frames, got \(collected.count)")
+        #expect(collected.allSatisfy { $0.width == 320 && $0.height == 180 })
+        let ptsValues = collected.map(\.pts)
+        #expect(zip(ptsValues, ptsValues.dropFirst()).allSatisfy { $0 < $1 }, "output PTS must be monotonic")
+
+        // Hardware exactly where the chip has an AV1 decoder, software
+        // (dav1d) everywhere else — never the hardware-only native decoder
+        // on a chip that cannot run it.
+        let chipDecodesAV1 = VTIsHardwareDecodeSupported(kCMVideoCodecType_AV1)
+        #expect(hardwareActive == chipDecodesAV1)
+        #expect(Set(collected.map(\.hardware)) == [chipDecodesAV1])
+        // 10-bit stays 10-bit on either path.
+        #expect(Set(collected.map(\.format)).isSubset(of: [
+            kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
+            kCVPixelFormatType_420YpCbCr10BiPlanarFullRange,
+        ]))
     }
 
     @Test("video: software-only policy decodes identically", .timeLimit(.minutes(1)))

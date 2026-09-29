@@ -1,6 +1,7 @@
 internal import CFFmpeg
 import CoreVideo
 import Foundation
+import VideoToolbox
 
 /// Events emitted by decoders on their own threads.
 public enum DecodeEvent: Sendable {
@@ -250,7 +251,8 @@ public final class VideoDecoder: @unchecked Sendable {
     private func threadMain() {
         FFmpegRuntime.initialize()
 
-        let wantHardware = policy == .videoToolbox && Self.codecSupportsVideoToolbox(parameters.raw.pointee.codec_id)
+        let wantHardware = policy == .videoToolbox
+            && Self.decoder(for: parameters.raw.pointee.codec_id, hardware: true) != nil
         if !setupCodec(hardware: wantHardware), !setupCodec(hardware: false) {
             eventSink.yield(.failed(EngineError(
                 code: .decoderInitFailed,
@@ -705,7 +707,7 @@ public final class VideoDecoder: @unchecked Sendable {
     // MARK: Codec lifecycle (decode thread only)
 
     private func setupCodec(hardware: Bool) -> Bool {
-        guard let codec = avcodec_find_decoder(parameters.raw.pointee.codec_id),
+        guard let codec = Self.decoder(for: parameters.raw.pointee.codec_id, hardware: hardware),
               let context = avcodec_alloc_context3(codec)
         else { return false }
 
@@ -762,8 +764,49 @@ public final class VideoDecoder: @unchecked Sendable {
         eventSink.finish()
     }
 
-    static func codecSupportsVideoToolbox(_ codecID: AVCodecID) -> Bool {
-        guard let codec = avcodec_find_decoder(codecID) else { return false }
+    // MARK: Decoder choice
+
+    /// The FFmpeg decoder for one path. Deliberately not `avcodec_find_decoder`,
+    /// which returns the first registered decoder for the codec: for AV1 the
+    /// right one depends on the path. FFmpeg's native `av1` decoder is the only
+    /// one with a VideoToolbox hwaccel, but it cannot decode without one
+    /// (libavcodec/av1dec.c); dav1d (`libdav1d`, registered first) decodes in
+    /// software but has no hardware path. Taking the first registered decoder
+    /// either loses AV1 hardware decoding or, without dav1d, plays AV1 as a
+    /// black picture — the frames never come.
+    ///
+    /// Otherwise registration order is kept, and like `avcodec_find_decoder`
+    /// an experimental decoder is only the last resort.
+    static func decoder(for codecID: AVCodecID, hardware: Bool) -> UnsafePointer<AVCodec>? {
+        if hardware, !deviceDecodesInHardware(codecID) { return nil }
+        var iterator: UnsafeMutableRawPointer?
+        var experimental: UnsafePointer<AVCodec>?
+        while let codec = av_codec_iterate(&iterator) {
+            guard codec.pointee.id == codecID, av_codec_is_decoder(codec) != 0 else { continue }
+            let usable = hardware ? hasVideoToolboxConfig(codec) : !isHardwareOnly(codec)
+            guard usable else { continue }
+            if codec.pointee.capabilities & AV_CODEC_CAP_EXPERIMENTAL != 0 {
+                experimental = experimental ?? codec
+                continue
+            }
+            return codec
+        }
+        return experimental
+    }
+
+    /// Codecs whose VideoToolbox decoder depends on the chip. For these the
+    /// hardware path is only worth opening when the device has one, because
+    /// FFmpeg's decoder for them has no software fallback to land on. H.264
+    /// and HEVC are in hardware on every supported device; the other hwaccel
+    /// codecs fall back inside FFmpeg.
+    private static func deviceDecodesInHardware(_ codecID: AVCodecID) -> Bool {
+        switch codecID {
+        case AV_CODEC_ID_AV1: VTIsHardwareDecodeSupported(kCMVideoCodecType_AV1)
+        default: true
+        }
+    }
+
+    private static func hasVideoToolboxConfig(_ codec: UnsafePointer<AVCodec>) -> Bool {
         var index: Int32 = 0
         while let config = avcodec_get_hw_config(codec, index) {
             if config.pointee.device_type == AV_HWDEVICE_TYPE_VIDEOTOOLBOX,
@@ -773,6 +816,14 @@ public final class VideoDecoder: @unchecked Sendable {
             index += 1
         }
         return false
+    }
+
+    /// Decoders that open fine and then fail every packet without hardware.
+    /// FFmpeg flags none of them: its native AV1 decoder is hwaccel-only by
+    /// implementation (av1dec.c returns ENOSYS without one), so it is named.
+    private static func isHardwareOnly(_ codec: UnsafePointer<AVCodec>) -> Bool {
+        if codec.pointee.capabilities & AV_CODEC_CAP_HARDWARE != 0 { return true }
+        return codec.pointee.id == AV_CODEC_ID_AV1 && String(cString: codec.pointee.name) == "av1"
     }
 }
 

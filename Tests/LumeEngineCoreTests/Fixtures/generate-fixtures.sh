@@ -11,6 +11,7 @@
 #   surround71.mkv — FLAC 7.1 audio-only
 #   truehd.mkv     — TrueHD 5.1 audio-only (40-sample access units)
 #   interlaced.ts  — 1080i-style MPEG-TS, field-coded, TFF (deinterlacer input)
+#   av1.mkv        — AV1 Main 10-bit + AAC (software AV1 via dav1d on most hosts)
 set -euo pipefail
 
 FFMPEG="${FFMPEG:-ffmpeg}"
@@ -73,6 +74,16 @@ gen truehd.mkv \
 # deprecated top_field_first, and an FFmpeg 9 host CLI rejects it outright
 # ("Codec AVOption top (top field first) is not a encoding option"), which
 # fails fixture generation and with it every deinterlace test.
+# AV1 in 10 bit, as streaming services and Dolby Vision profile 10 ship it.
+# Most Apple chips have no AV1 hardware decoder, and FFmpeg's native AV1
+# decoder cannot decode without one — this fixture is what proves the
+# software path (dav1d) exists. SVT-AV1 ships with Homebrew's ffmpeg.
+gen av1.mkv \
+    -f lavfi -i "testsrc2=duration=4:size=320x180:rate=24" \
+    -f lavfi -i "sine=frequency=440:duration=4" \
+    -c:v libsvtav1 -preset 12 -pix_fmt yuv420p10le -g 24 \
+    -c:a aac -shortest
+
 gen interlaced.ts \
     -f lavfi -i "testsrc2=duration=4:size=640x360:rate=50" \
     -vf "interlace=scan=tff" \
