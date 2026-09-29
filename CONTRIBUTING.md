@@ -70,7 +70,7 @@ swift test
 ```
 
 That works with no FFmpeg build: `Package.swift` falls back to the checksum-pinned
-`FFmpeg.xcframework` attached to a release and SwiftPM downloads it (~270 MB, cached
+`FFmpeg.xcframework` attached to a release and SwiftPM downloads it (~125 MB, cached
 afterwards). Most engine work — demux, decode, session, render, subtitles — needs
 nothing more.
 
@@ -92,7 +92,11 @@ to the released artifact. One slice is enough for local work; the full 10-slice 
 
 If you change anything under `build/`, say so in the PR — CI caches the FFmpeg build on
 the hash of `build/versions.json`, `build/scripts/**`, and `build/patches/**`, and the
-released artifact URL in `Package.swift` has to move in the same change.
+released artifact URL in `Package.swift` has to move with it. That move happens at
+release time, because the checksum only exists once the release job has built the
+artifact: the tag is pushed, the artifact attached, `Package.swift` pointed at it, and
+the tag moved onto that commit (the release job never rebuilds a published artifact).
+AGENTS.md has the details.
 
 ---
 
