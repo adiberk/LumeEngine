@@ -118,12 +118,32 @@ jobs:
     permissions:
       contents: write
     steps:
+      # A published artifact is never rebuilt. Package.swift pins its SHA-256,
+      # and a rebuild is not bit-identical, so replacing the zip would break
+      # every consumer resolving that release. This is what makes the release
+      # drill safe: tag, let this job attach the artifact, point Package.swift
+      # at it, then move the tag onto that commit — the re-pushed tag runs
+      # this job again, and it must leave the published zip alone.
+      - name: Check for an already published artifact
+        id: published
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json assets -q '.assets[].name' 2>/dev/null \
+              | grep -qx 'FFmpeg.xcframework.zip'; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::$GITHUB_REF_NAME already has FFmpeg.xcframework.zip — not rebuilding it"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/checkout@v4
+        if: steps.published.outputs.exists != 'true'
       # Fail in seconds rather than after a 40-minute build. build-ffmpeg.sh
       # resolves each slice's SDK through `xcrun --sdk`, so an SDK absent from the
       # runner image can only yield an incomplete xcframework — better to say so
       # up front than to publish a release with slices silently missing.
       - name: Verify platform SDKs
+        if: steps.published.outputs.exists != 'true'
         run: |
           missing=""
           for sdk in macosx iphoneos iphonesimulator appletvos appletvsimulator xros xrsimulator; do
@@ -135,21 +155,26 @@ jobs:
           fi
           echo "all 7 platform SDKs present"
       - name: Download FFmpeg and dav1d sources
+        if: steps.published.outputs.exists != 'true'
         run: build/scripts/fetch-sources.sh
       - name: Install build tooling
+        if: steps.published.outputs.exists != 'true'
         # nasm: dav1d's and FFmpeg's x86_64 assembly; meson + ninja: dav1d.
         run: brew install nasm meson ninja
       - name: Build all slices
+        if: steps.published.outputs.exists != 'true'
         run: |
           for p in macos-arm64 macos-x86_64 ios-arm64 ios-sim-arm64 ios-sim-x86_64 tvos-arm64 tvos-sim-arm64 tvos-sim-x86_64 xros-arm64 xros-sim-arm64; do
             build/scripts/build-ffmpeg.sh "$p"
           done
       - name: Package and checksum
+        if: steps.published.outputs.exists != 'true'
         run: |
           build/scripts/make-xcframework.sh
           ditto -c -k --keepParent BinaryDependencies/FFmpeg.xcframework FFmpeg.xcframework.zip
           swift package compute-checksum FFmpeg.xcframework.zip > FFmpeg.xcframework.zip.checksum
       - name: Attach to release
+        if: steps.published.outputs.exists != 'true'
         uses: softprops/action-gh-release@v2
         with:
           files: |
