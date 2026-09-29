@@ -118,7 +118,9 @@ let package = Package(
 
         .testTarget(
             name: "LumeEngineCoreTests",
-            dependencies: ["LumeEngineCore", "LumeEngine"],
+            // CFFmpeg directly: some tests build FFmpeg structs (e.g. Dolby
+            // Vision metadata) to exercise the engine's readers of them.
+            dependencies: ["LumeEngineCore", "LumeEngine", "CFFmpeg"],
             exclude: ["Fixtures/generate-fixtures.sh"]
         ),
     ],
