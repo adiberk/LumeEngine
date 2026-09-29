@@ -84,15 +84,23 @@ struct DolbyVisionTests {
         #expect(parsed.baseLayerBitDepth == 10)
         #expect(parsed.curves.count == 3)
 
-        #expect(parsed.curves[0].pivots == [0, 400.0 / 1023, 1])
-        #expect(parsed.curves[0].pieces == [
+        // Expected values are typed up front rather than written inline in
+        // `#expect`: comparing against an untyped literal of enum cases took
+        // Swift 6.4 over two seconds to type-check, beyond what Swift 6.2
+        // (CI's Xcode 26.3) accepts at all.
+        let expectedPivots: [Double] = [0, 400.0 / 1023, 1]
+        let expectedI: [DolbyVisionMapping.Piece] = [
             .polynomial([-612_867.0 / 8_388_608, 9_803_467.0 / 8_388_608, 0]),
             .polynomial([1, 0, -0.25]),
-        ])
-        #expect(parsed.curves[1].pieces == [
-            .mmr(constant: -0.125, coefficients: [[1, 2, 3, 4, 5, 6, 7], [-1, -2, -3, -4, -5, -6, -7]]),
-        ])
-        #expect(parsed.curves[2].pieces == [.polynomial([0, 1, 0])])
+        ]
+        let mmrRows: [[Double]] = [[1, 2, 3, 4, 5, 6, 7], [-1, -2, -3, -4, -5, -6, -7]]
+        let expectedP: [DolbyVisionMapping.Piece] = [.mmr(constant: -0.125, coefficients: mmrRows)]
+        let expectedT: [DolbyVisionMapping.Piece] = [.polynomial([0, 1, 0])]
+
+        #expect(parsed.curves[0].pivots == expectedPivots)
+        #expect(parsed.curves[0].pieces == expectedI)
+        #expect(parsed.curves[1].pieces == expectedP)
+        #expect(parsed.curves[2].pieces == expectedT)
 
         #expect(parsed.yccToRGB[0] == 1)
         #expect(parsed.yccToRGB[1] == 799.0 / 8192)

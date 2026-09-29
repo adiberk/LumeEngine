@@ -85,9 +85,12 @@ final class ChannelDrain<Output: Sendable>: @unchecked Sendable {
         get async {
             let result: Result = await withCheckedContinuation { continuation in
                 lock.lock()
-                if let result {
+                // `self.` is load-bearing: inside the initializer of the local
+                // `result`, Swift 6.2 (CI's Xcode 26.3) binds a bare `result`
+                // to that local, not to the stored property, and rejects it.
+                if let stored = self.result {
                     lock.unlock()
-                    continuation.resume(returning: result)
+                    continuation.resume(returning: stored)
                 } else {
                     waiter = continuation
                     lock.unlock()

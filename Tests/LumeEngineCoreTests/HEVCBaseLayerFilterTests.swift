@@ -87,8 +87,13 @@ struct HEVCBaseLayerFilterTests {
     @Test("hvcC: enhancement parameter sets and the arrays they empty are removed")
     func hvcC() {
         func array(_ type: UInt8, _ units: [[UInt8]]) -> [UInt8] {
-            [0x80 | type, UInt8(units.count >> 8), UInt8(units.count & 0xFF)]
-                + units.flatMap { [UInt8($0.count >> 8), UInt8($0.count & 0xFF)] + $0 }
+            var bytes: [UInt8] = [0x80 | type, UInt8(units.count >> 8), UInt8(units.count & 0xFF)]
+            for unit in units {
+                bytes.append(UInt8(unit.count >> 8))
+                bytes.append(UInt8(unit.count & 0xFF))
+                bytes.append(contentsOf: unit)
+            }
+            return bytes
         }
         let header = [UInt8](repeating: 0xEE, count: 22)
         let vps = Self.nal(type: 32, layer: 0), sps = Self.nal(type: 33, layer: 0)

@@ -169,22 +169,41 @@ extension DolbyVisionMapping {
 
 /// Row-major 3×3 helpers. Tiny and allocation-happy by design: they run once
 /// per frame on nine numbers.
+///
+/// Written as plain loops with every type spelled out. The closure-and-literal
+/// form (`reduce(0) { $0 + a[…] * b[…] }` inside a `map`) type-checks
+/// instantly on Swift 6.4 but exceeds Swift 6.2's solver limit ("unable to
+/// type-check this expression in reasonable time") — which is what CI's
+/// Xcode 26.3 runs.
 enum Matrix3 {
     static func multiply(_ a: [Double], _ b: [Double]) -> [Double] {
-        (0..<9).map { index in
-            let row = index / 3, column = index % 3
-            return (0..<3).reduce(0) { $0 + a[row * 3 + $1] * b[$1 * 3 + column] }
+        var product = [Double](repeating: 0, count: 9)
+        for row in 0..<3 {
+            for column in 0..<3 {
+                var sum: Double = 0
+                for k in 0..<3 {
+                    sum += a[row * 3 + k] * b[k * 3 + column]
+                }
+                product[row * 3 + column] = sum
+            }
         }
+        return product
     }
 
     static func inverse(_ m: [Double]) -> [Double] {
-        let cofactors = [
-            m[4] * m[8] - m[5] * m[7], m[2] * m[7] - m[1] * m[8], m[1] * m[5] - m[2] * m[4],
-            m[5] * m[6] - m[3] * m[8], m[0] * m[8] - m[2] * m[6], m[2] * m[3] - m[0] * m[5],
-            m[3] * m[7] - m[4] * m[6], m[1] * m[6] - m[0] * m[7], m[0] * m[4] - m[1] * m[3],
+        // Cofactor (i, j) of the transpose, i.e. the adjugate, row-major.
+        func minor(_ a: Int, _ b: Int, _ c: Int, _ d: Int) -> Double {
+            let lhs: Double = m[a] * m[b]
+            let rhs: Double = m[c] * m[d]
+            return lhs - rhs
+        }
+        let adjugate: [Double] = [
+            minor(4, 8, 5, 7), minor(2, 7, 1, 8), minor(1, 5, 2, 4),
+            minor(5, 6, 3, 8), minor(0, 8, 2, 6), minor(2, 3, 0, 5),
+            minor(3, 7, 4, 6), minor(1, 6, 0, 7), minor(0, 4, 1, 3),
         ]
-        let determinant = m[0] * cofactors[0] + m[1] * cofactors[3] + m[2] * cofactors[6]
-        return cofactors.map { $0 / determinant }
+        let determinant: Double = m[0] * adjugate[0] + m[1] * adjugate[3] + m[2] * adjugate[6]
+        return adjugate.map { (value: Double) -> Double in value / determinant }
     }
 
     /// Linear LMS (Hunt-Pointer-Estevez, no crosstalk) to linear BT.2020 RGB.
@@ -194,8 +213,9 @@ enum Matrix3 {
     /// `M = X(0.04) · HPE`, where `X(c)` has `1 − 2c` on the diagonal and `c`
     /// elsewhere. So `HPE⁻¹ = M⁻¹ · X(0.04)`.
     static let hpeLMSToBT2020: [Double] = {
-        let ictcp = [1688.0, 2146, 262, 683, 2951, 462, 99, 309, 3688].map { $0 / 4096 }
-        let crosstalk = [0.92, 0.04, 0.04, 0.04, 0.92, 0.04, 0.04, 0.04, 0.92]
+        let ictcpCodes: [Double] = [1688, 2146, 262, 683, 2951, 462, 99, 309, 3688]
+        let ictcp = ictcpCodes.map { (code: Double) -> Double in code / 4096 }
+        let crosstalk: [Double] = [0.92, 0.04, 0.04, 0.04, 0.92, 0.04, 0.04, 0.04, 0.92]
         return multiply(inverse(ictcp), crosstalk)
     }()
 }
