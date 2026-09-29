@@ -13,8 +13,9 @@ public final class VideoFrame: @unchecked Sendable {
     public let width: Int
     public let height: Int
     /// True when the pixel buffer is a VideoToolbox surface handed over
-    /// zero-copy. False for anything the CPU had to write, including frames
-    /// that were hardware-decoded and then deinterlaced.
+    /// zero-copy. False for anything the engine had to write, including frames
+    /// that were hardware-decoded and then deinterlaced (CPU) or converted
+    /// from Dolby Vision to HDR10 (GPU).
     public let isHardwareDecoded: Bool
 
     init(

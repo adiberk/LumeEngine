@@ -83,6 +83,7 @@ public final class VideoDecoder: @unchecked Sendable {
     private var stopRequested = false
     private var drainRequested = false
     private var deinterlaceActive = false
+    private var dolbyVisionActive = false
 
     // Decode-thread-only state.
     private var codecContext: UnsafeMutablePointer<AVCodecContext>?
@@ -107,6 +108,24 @@ public final class VideoDecoder: @unchecked Sendable {
     private var downloadedFrame: UnsafeMutablePointer<AVFrame>?
     private var filteredFrame: UnsafeMutablePointer<AVFrame>?
 
+    // Dolby Vision state, decode-thread-only.
+    /// The stream's Dolby Vision configuration says its base layer is IPTPQc2
+    /// (profiles 5, 10.0, 20), which no renderer can show as YCbCr.
+    private let dolbyVisionBaseLayerIsIPT: Bool
+    /// Built on the first frame that needs it, so sessions without Dolby
+    /// Vision never touch Metal.
+    private var dolbyVisionConverter: DolbyVisionConverter? {
+        didSet {
+            lock.lock()
+            dolbyVisionActive = dolbyVisionConverter != nil
+            lock.unlock()
+        }
+    }
+    /// Set when the GPU path could not be built or failed mid-stream. The rest
+    /// of the session plays unconverted, tinted rather than stopped (PLAN.md
+    /// §3.3 — degrade, never crash), exactly like a failed deinterlacer.
+    private var dolbyVisionGivenUp = false
+
     private let maxConsecutiveErrors = 100
 
     public init(
@@ -121,6 +140,7 @@ public final class VideoDecoder: @unchecked Sendable {
         self.output = output
         self.policy = policy
         self.deinterlacing = deinterlacing
+        self.dolbyVisionBaseLayerIsIPT = DolbyVisionMapping.baseLayerIsIPT(parameters.raw)
         var continuation: AsyncStream<DecodeEvent>.Continuation!
         events = AsyncStream(bufferingPolicy: .unbounded) { continuation = $0 }
         eventSink = continuation
@@ -143,6 +163,14 @@ public final class VideoDecoder: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return deinterlaceActive
+    }
+
+    /// True while Dolby Vision frames with an IPT base layer are being
+    /// converted to HDR10 on the GPU.
+    public var isConvertingDolbyVision: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return dolbyVisionActive
     }
 
     // MARK: Control (any thread)
@@ -228,6 +256,7 @@ public final class VideoDecoder: @unchecked Sendable {
         }
         defer {
             filterGraph = nil
+            dolbyVisionConverter = nil
             av_frame_free(&downloadedFrame)
             av_frame_free(&filteredFrame)
         }
@@ -444,8 +473,8 @@ public final class VideoDecoder: @unchecked Sendable {
         let duration = max(duration, 0)
         let serial = currentSerial ?? 0
 
-        let pixelBuffer: CVPixelBuffer
-        let hardware = frame.pointee.format == AV_PIX_FMT_VIDEOTOOLBOX.rawValue
+        var pixelBuffer: CVPixelBuffer
+        var hardware = frame.pointee.format == AV_PIX_FMT_VIDEOTOOLBOX.rawValue
         if hardware {
             guard let opaque = frame.pointee.data.3 else { return }
             // +0 borrow; storing into VideoFrame retains it before av_frame_unref.
@@ -459,6 +488,11 @@ public final class VideoDecoder: @unchecked Sendable {
             }
         }
 
+        if let converted = convertDolbyVision(frame, pixelBuffer) {
+            pixelBuffer = converted
+            hardware = false // an engine-written surface, not VideoToolbox's
+        }
+
         let videoFrame = VideoFrame(
             pixelBuffer: pixelBuffer,
             pts: pts,
@@ -468,6 +502,48 @@ public final class VideoDecoder: @unchecked Sendable {
         )
         // Blocking send = backpressure; closed output (teardown) just drops.
         try? output.send(videoFrame)
+    }
+
+    // MARK: Dolby Vision (decode thread only)
+
+    /// Converts a Dolby Vision frame whose base layer is IPTPQc2 to HDR10;
+    /// nil for every other frame, which is delivered as decoded. Profile 8
+    /// and the like carry the same metadata, but their base layer is already
+    /// HDR10, so they stay on the zero-copy path.
+    private func convertDolbyVision(
+        _ frame: UnsafeMutablePointer<AVFrame>,
+        _ pixelBuffer: CVPixelBuffer
+    ) -> CVPixelBuffer? {
+        guard !dolbyVisionGivenUp,
+              dolbyVisionBaseLayerIsIPT || frame.pointee.colorspace == AVCOL_SPC_IPT_C2,
+              let mapping = DolbyVisionMapping(frame: frame)
+        else { return nil }
+
+        do {
+            let converter = try dolbyVisionConverter ?? DolbyVisionConverter()
+            dolbyVisionConverter = converter
+            return try converter.convert(pixelBuffer, mapping: mapping, chromaSiting: Self.chromaSiting(of: frame))
+        } catch let error as EngineError where error.code == .renderFailed {
+            // The GPU refused this frame — iOS does that to a backgrounded app —
+            // so this one goes out as decoded and the next one tries again.
+            // Giving up here would leave the picture tinted after the app comes
+            // back to the foreground.
+            return nil
+        } catch {
+            dolbyVisionGivenUp = true
+            dolbyVisionConverter = nil
+            return nil
+        }
+    }
+
+    private static func chromaSiting(of frame: UnsafeMutablePointer<AVFrame>) -> DolbyVisionConverter.ChromaSiting {
+        switch frame.pointee.chroma_location {
+        case AVCHROMA_LOC_TOPLEFT: .topLeft
+        case AVCHROMA_LOC_CENTER: .center
+        case AVCHROMA_LOC_TOP: .top
+        // Unspecified reads as the HEVC (and MPEG-2) default.
+        default: .left
+        }
     }
 
     private func drainCodec(into frame: UnsafeMutablePointer<AVFrame>, emitEOFSerial serial: UInt64?) {
