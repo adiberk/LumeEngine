@@ -84,15 +84,23 @@ struct DolbyVisionTests {
         #expect(parsed.baseLayerBitDepth == 10)
         #expect(parsed.curves.count == 3)
 
-        #expect(parsed.curves[0].pivots == [0, 400.0 / 1023, 1])
-        #expect(parsed.curves[0].pieces == [
+        // Expected values are typed up front rather than written inline in
+        // `#expect`: comparing against an untyped literal of enum cases took
+        // Swift 6.4 over two seconds to type-check, beyond what Swift 6.2
+        // (CI's Xcode 26.3) accepts at all.
+        let expectedPivots: [Double] = [0, 400.0 / 1023, 1]
+        let expectedI: [DolbyVisionMapping.Piece] = [
             .polynomial([-612_867.0 / 8_388_608, 9_803_467.0 / 8_388_608, 0]),
             .polynomial([1, 0, -0.25]),
-        ])
-        #expect(parsed.curves[1].pieces == [
-            .mmr(constant: -0.125, coefficients: [[1, 2, 3, 4, 5, 6, 7], [-1, -2, -3, -4, -5, -6, -7]]),
-        ])
-        #expect(parsed.curves[2].pieces == [.polynomial([0, 1, 0])])
+        ]
+        let mmrRows: [[Double]] = [[1, 2, 3, 4, 5, 6, 7], [-1, -2, -3, -4, -5, -6, -7]]
+        let expectedP: [DolbyVisionMapping.Piece] = [.mmr(constant: -0.125, coefficients: mmrRows)]
+        let expectedT: [DolbyVisionMapping.Piece] = [.polynomial([0, 1, 0])]
+
+        #expect(parsed.curves[0].pivots == expectedPivots)
+        #expect(parsed.curves[0].pieces == expectedI)
+        #expect(parsed.curves[1].pieces == expectedP)
+        #expect(parsed.curves[2].pieces == expectedT)
 
         #expect(parsed.yccToRGB[0] == 1)
         #expect(parsed.yccToRGB[1] == 799.0 / 8192)
@@ -446,11 +454,15 @@ private struct Reference {
             out = c[0] + c[1] * s + c[2] * s * s
         case .mmr(let constant, let rows):
             let (y, u, v) = (sig[0], sig[1], sig[2])
-            let terms = [y, u, v, y * u, y * v, u * v, y * u * v]
-            out = rows.enumerated().reduce(constant) { total, row in
-                let order = Double(row.offset + 1)
-                return total + zip(row.element, terms).reduce(0) { $0 + $1.0 * pow($1.1, order) }
+            let terms: [Double] = [y, u, v, y * u, y * v, u * v, y * u * v]
+            var total: Double = constant
+            for (row, coefficients) in rows.enumerated() {
+                let order = Double(row + 1)
+                for (coefficient, term) in zip(coefficients, terms) {
+                    total += coefficient * pow(term, order)
+                }
             }
+            out = total
         }
         return min(max(out, 0), 1)
     }
@@ -472,12 +484,28 @@ private struct Reference {
         0.01736321, -0.04725154, 1.03004253,
     ]
 
+    // Loops with explicit types, not `map { reduce(0) { … } }`: the closure
+    // form is beyond Swift 6.2's type checker (CI's Xcode 26.3).
     private static func apply(_ m: [Double], _ v: [Double]) -> [Double] {
-        (0..<3).map { row in (0..<3).reduce(0) { $0 + m[row * 3 + $1] * v[$1] } }
+        var result = [Double](repeating: 0, count: 3)
+        for row in 0..<3 {
+            var sum: Double = 0
+            for k in 0..<3 { sum += m[row * 3 + k] * v[k] }
+            result[row] = sum
+        }
+        return result
     }
 
     private static func multiply(_ a: [Double], _ b: [Double]) -> [Double] {
-        (0..<9).map { index in (0..<3).reduce(0) { $0 + a[index / 3 * 3 + $1] * b[$1 * 3 + index % 3] } }
+        var result = [Double](repeating: 0, count: 9)
+        for row in 0..<3 {
+            for column in 0..<3 {
+                var sum: Double = 0
+                for k in 0..<3 { sum += a[row * 3 + k] * b[k * 3 + column] }
+                result[row * 3 + column] = sum
+            }
+        }
+        return result
     }
 
     private static let m1 = 2610.0 / 16384, m2 = 2523.0 / 4096 * 128

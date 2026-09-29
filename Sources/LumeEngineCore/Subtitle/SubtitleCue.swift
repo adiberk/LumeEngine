@@ -20,6 +20,13 @@ public struct SubtitleCue: Sendable, Equatable, Identifiable {
 
 /// Time-indexed cue container, safe for concurrent insert (decoder thread) and
 /// query (UI tick). Cues are kept sorted by start time.
+///
+/// Cues outlive seeks on purpose — the store is a timeline, not a queue — so
+/// the same packet reaches it again whenever the demuxer re-reads a range it
+/// already delivered: a backward seek, or the seek that backfills a subtitle
+/// track selected after the demuxer read past its packets. An identical cue
+/// (same start, end, and text) is therefore dropped, or every re-read would
+/// show its lines doubled.
 public final class SubtitleStore: @unchecked Sendable {
     private let lock = NSLock()
     private var cues: [SubtitleCue] = []
@@ -32,12 +39,17 @@ public final class SubtitleStore: @unchecked Sendable {
         guard !trimmed.isEmpty, end > start else { return }
         lock.lock()
         defer { lock.unlock() }
-        let cue = SubtitleCue(id: nextID, start: start, end: end, text: trimmed)
-        nextID += 1
         // Insertion point by start time (cues arrive nearly sorted).
         var index = cues.count
-        while index > 0 && cues[index - 1].start > cue.start { index -= 1 }
-        cues.insert(cue, at: index)
+        while index > 0 && cues[index - 1].start > start { index -= 1 }
+        // Cues with the same start sit directly before the insertion point.
+        var existing = index - 1
+        while existing >= 0 && cues[existing].start == start {
+            if cues[existing].end == end && cues[existing].text == trimmed { return }
+            existing -= 1
+        }
+        cues.insert(SubtitleCue(id: nextID, start: start, end: end, text: trimmed), at: index)
+        nextID += 1
     }
 
     /// All cues covering `time` (engine µs).

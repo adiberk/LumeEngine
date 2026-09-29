@@ -35,6 +35,25 @@ struct SubtitleParserTests {
         #expect(Set(store.activeCues(at: 4_500_000).map(\.text)) == ["overlap", "two"])
         #expect(store.activeCues(at: 6_500_000).isEmpty)
     }
+
+    /// Re-reading a range — backward seek, or the backfill seek of a track
+    /// selected late — delivers the same packets again. Stored twice, every
+    /// line of that range showed doubled.
+    @Test("store drops a cue it already holds, and only that")
+    func storeDeduplicates() {
+        let store = SubtitleStore()
+        store.insert(start: 1_000_000, end: 3_000_000, text: "one")
+        store.insert(start: 4_000_000, end: 6_000_000, text: "two")
+        store.insert(start: 1_000_000, end: 3_000_000, text: "one")
+        store.insert(start: 1_000_000, end: 3_000_000, text: " one\n") // trims to the same cue
+        #expect(store.count == 2)
+        #expect(store.activeCues(at: 2_000_000).map(\.text) == ["one"])
+
+        // Same start, but a different cue: both stay.
+        store.insert(start: 1_000_000, end: 3_000_000, text: "other speaker")
+        store.insert(start: 1_000_000, end: 2_000_000, text: "one")
+        #expect(store.count == 4)
+    }
 }
 
 @Suite("Tracks & subtitles", .serialized)
@@ -85,6 +104,31 @@ struct TrackSubtitleTests {
         // Deselect clears the store.
         await session.selectSubtitleTrack(nil)
         #expect(session.subtitles.count == 0)
+
+        await session.shutdown()
+    }
+
+    /// A backward seek re-reads subtitle packets the store already holds. Before
+    /// the store deduplicated, every re-read range showed its lines twice — and
+    /// `embeddedSubtitles` flaked whenever its backfill seek landed after live
+    /// delivery had already stored the cues.
+    @Test("seeking back does not duplicate cues", .timeLimit(.minutes(1)))
+    func seekBackKeepsCuesUnique() async throws {
+        let session = makeSession()
+        let info = try await session.open(url: try Fixtures.path("multitrack.mkv"))
+        let subtitleTrack = try #require(info.subtitleTracks.first)
+
+        await session.selectSubtitleTrack(subtitleTrack.index)
+        await session.play()
+        let sawCues = await eventually { session.subtitles.count >= 2 }
+        #expect(sawCues, "both cues should decode first, store has \(session.subtitles.count)")
+
+        await session.seek(to: 0)
+        // The 8 s fixture is re-read within milliseconds of the seek; give the
+        // subtitle lane ample time to decode it all a second time.
+        let grew = await eventually(timeout: 2) { session.subtitles.count > 2 }
+        #expect(!grew, "re-read cues were stored again: \(session.subtitles.count) cues")
+        #expect(session.subtitles.activeCues(at: info.startTime + 2_000_000).map(\.text) == ["Hello from LumeEngine"])
 
         await session.shutdown()
     }
