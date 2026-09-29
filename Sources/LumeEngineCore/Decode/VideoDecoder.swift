@@ -4,8 +4,10 @@ import Foundation
 
 /// Events emitted by decoders on their own threads.
 public enum DecodeEvent: Sendable {
-    /// Hardware decoding failed mid-stream; the decoder rebuilt itself in
-    /// software and continues from the next keyframe. Informational.
+    /// Frames now come from software decoding: either hardware decoding failed
+    /// mid-stream and the decoder rebuilt itself in software (continuing from
+    /// the next keyframe), or VideoToolbox refused the stream and FFmpeg fell
+    /// back on its own. Informational.
     case downgradedToSoftware(EngineError)
     /// The codec has been fully drained for the given serial.
     case endOfStream(serial: UInt64)
@@ -84,9 +86,20 @@ public final class VideoDecoder: @unchecked Sendable {
     private var drainRequested = false
     private var deinterlaceActive = false
     private var dolbyVisionActive = false
+    /// Whether the frames actually coming out are VideoToolbox surfaces; nil
+    /// until the current codec has produced one. Not the same as
+    /// `usingHardware`: FFmpeg falls back to software on its own, without an
+    /// error, when VideoToolbox refuses a stream.
+    private var framesFromHardware: Bool?
 
     // Decode-thread-only state.
     private var codecContext: UnsafeMutablePointer<AVCodecContext>?
+    /// HEVC only: strips enhancement layers (MV-HEVC's second view) before
+    /// the codec sees them — see `HEVCBaseLayerFilter` for why that decides
+    /// between hardware and software decoding.
+    private let baseLayerFilter: HEVCBaseLayerFilter?
+    /// Scratch packet for the base-layer copy of a multi-layer packet.
+    private var baseLayerPacket: UnsafeMutablePointer<AVPacket>?
     private var usingHardware = false
     private var currentSerial: UInt64?
     private var waitingForKeyframe = false
@@ -141,6 +154,12 @@ public final class VideoDecoder: @unchecked Sendable {
         self.policy = policy
         self.deinterlacing = deinterlacing
         self.dolbyVisionBaseLayerIsIPT = DolbyVisionMapping.baseLayerIsIPT(parameters.raw)
+        self.baseLayerFilter = parameters.raw.pointee.codec_id == AV_CODEC_ID_HEVC
+            ? HEVCBaseLayerFilter(extradata: UnsafeRawBufferPointer(
+                start: parameters.raw.pointee.extradata,
+                count: Int(max(parameters.raw.pointee.extradata_size, 0))
+            ))
+            : nil
         var continuation: AsyncStream<DecodeEvent>.Continuation!
         events = AsyncStream(bufferingPolicy: .unbounded) { continuation = $0 }
         eventSink = continuation
@@ -150,11 +169,13 @@ public final class VideoDecoder: @unchecked Sendable {
         eventSink.finish()
     }
 
-    /// True when frames are currently produced by VideoToolbox.
+    /// True when frames are currently produced by VideoToolbox — judged from
+    /// the frames themselves once there are any, so a silent FFmpeg fallback
+    /// to software reads as software.
     public var isHardwareActive: Bool {
         lock.lock()
         defer { lock.unlock() }
-        return usingHardware
+        return framesFromHardware ?? usingHardware
     }
 
     /// True while frames are being routed through the deinterlacer — i.e. the
@@ -261,6 +282,9 @@ public final class VideoDecoder: @unchecked Sendable {
             av_frame_free(&filteredFrame)
         }
 
+        if baseLayerFilter != nil { baseLayerPacket = av_packet_alloc() }
+        defer { av_packet_free(&baseLayerPacket) }
+
         while true {
             lock.lock()
             let stop = stopRequested
@@ -306,16 +330,18 @@ public final class VideoDecoder: @unchecked Sendable {
     }
 
     private func decode(packet: Packet, into frame: UnsafeMutablePointer<AVFrame>) {
-        guard let context = codecContext else { return }
+        guard let context = codecContext,
+              let input = baseLayer(of: packet)
+        else { return }
 
-        var sendResult = avcodec_send_packet(context, packet.raw)
+        var sendResult = avcodec_send_packet(context, input)
         if lume_is_eagain(sendResult) != 0 {
             // Decoder is full: pull frames, then retry once. Draining can
             // rebuild the codec underneath us (a delivery failure downgrades to
             // software), so the context is re-read rather than reused.
             receiveFrames(into: frame)
             guard let retryContext = codecContext else { return }
-            sendResult = avcodec_send_packet(retryContext, packet.raw)
+            sendResult = avcodec_send_packet(retryContext, input)
         }
         if sendResult < 0 && lume_is_eagain(sendResult) == 0 && lume_is_eof(sendResult) == 0 {
             handleDecodeError(sendResult)
@@ -336,8 +362,78 @@ public final class VideoDecoder: @unchecked Sendable {
                 return
             }
             consecutiveErrors = 0
+            noteFrameSource(frame)
             emit(frame: frame)
             av_frame_unref(frame)
+        }
+    }
+
+    /// The packet the codec should see: the demuxer's own, or a base-layer copy
+    /// in the scratch packet when it carries enhancement layers. Nil when
+    /// nothing of the base layer is left — never send an empty packet, which
+    /// FFmpeg reads as end of stream.
+    private func baseLayer(of packet: Packet) -> UnsafeMutablePointer<AVPacket>? {
+        guard let filter = baseLayerFilter,
+              let scratch = baseLayerPacket,
+              let data = packet.raw.pointee.data,
+              packet.raw.pointee.size > 0
+        else { return packet.raw }
+
+        let source = UnsafeRawBufferPointer(start: data, count: Int(packet.raw.pointee.size))
+        guard let ranges = filter.baseLayerRanges(of: source) else { return packet.raw }
+        let size = ranges.reduce(0) { $0 + $1.count }
+        guard size > 0 else { return nil }
+
+        av_packet_unref(scratch)
+        guard av_new_packet(scratch, Int32(size)) >= 0,
+              av_packet_copy_props(scratch, packet.raw) >= 0,
+              let destination = scratch.pointee.data
+        else {
+            // Out of memory: the full packet still decodes, just in software.
+            return packet.raw
+        }
+        var offset = 0
+        for range in ranges {
+            (destination + offset).update(from: data + range.lowerBound, count: range.count)
+            offset += range.count
+        }
+        return scratch
+    }
+
+    /// Replaces the context's extradata with its base-layer version (FFmpeg's
+    /// MP4 demuxer folds `lhvC` into it). Called before `avcodec_open2`.
+    private func stripEnhancementLayers(fromExtradataOf context: UnsafeMutablePointer<AVCodecContext>) {
+        guard let filter = baseLayerFilter,
+              let extradata = context.pointee.extradata,
+              context.pointee.extradata_size > 0,
+              let stripped = filter.baseLayerExtradata(UnsafeRawBufferPointer(
+                  start: extradata, count: Int(context.pointee.extradata_size)
+              )),
+              let replacement = av_mallocz(stripped.count + Int(AV_INPUT_BUFFER_PADDING_SIZE))
+        else { return }
+        replacement.copyMemory(from: stripped, byteCount: stripped.count)
+        av_freep(&context.pointee.extradata)
+        context.pointee.extradata = replacement.assumingMemoryBound(to: UInt8.self)
+        context.pointee.extradata_size = Int32(stripped.count)
+    }
+
+    /// Tracks where frames really come from. A hardware context whose frames
+    /// arrive in software means FFmpeg gave up on VideoToolbox by itself —
+    /// reported like any other downgrade, because silently decoding 4K in
+    /// software is exactly what makes a stream stutter.
+    private func noteFrameSource(_ frame: UnsafeMutablePointer<AVFrame>) {
+        let hardware = frame.pointee.format == AV_PIX_FMT_VIDEOTOOLBOX.rawValue
+        lock.lock()
+        let previous = framesFromHardware
+        framesFromHardware = hardware
+        let attached = usingHardware
+        lock.unlock()
+
+        if attached, !hardware, previous != false {
+            eventSink.yield(.downgradedToSoftware(EngineError(
+                code: .decoderInitFailed,
+                message: "VideoToolbox refused \(parameters.codecName); FFmpeg is decoding in software"
+            )))
         }
     }
 
@@ -618,6 +714,7 @@ public final class VideoDecoder: @unchecked Sendable {
             avcodec_free_context(&pointer)
             return false
         }
+        stripEnhancementLayers(fromExtradataOf: context)
 
         // Demux boundary rewrote packet timestamps to engine µs.
         context.pointee.pkt_timebase = lume_av_time_base_q()
@@ -646,6 +743,7 @@ public final class VideoDecoder: @unchecked Sendable {
         codecContext = context
         lock.lock()
         usingHardware = hardware
+        framesFromHardware = nil
         lock.unlock()
         return true
     }

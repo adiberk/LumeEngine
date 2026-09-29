@@ -179,6 +179,13 @@ struct DolbyVisionTests {
         let frames = try await decodeFirstFrames(Self.sample("DVprofile20.mp4"), count: 6, policy: policy)
         #expect(frames.count == 6)
         for frame in frames {
+            // Profile 20 is MV-HEVC. Unless the second view is stripped before
+            // the codec, VideoToolbox refuses the stream and FFmpeg decodes 4K
+            // in software without saying so — the "super laggy" Apple TV bug.
+            #expect(
+                frame.hardwareDecode == (policy == .videoToolbox),
+                "frames must come from \(policy == .videoToolbox ? "VideoToolbox" : "software")"
+            )
             #expect(frame.converting, "the decoder must report the conversion engaged")
             #expect(!frame.zeroCopy, "a converted frame is an engine-written surface")
             #expect(frame.format == kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange)
@@ -204,6 +211,7 @@ struct DolbyVisionTests {
         #expect(frames.count == 6)
         for frame in frames {
             #expect(!frame.converting, "profile 8's base layer is HDR10 already")
+            #expect(frame.hardwareDecode)
             #expect(frame.matrix == kCVImageBufferYCbCrMatrix_ITU_R_2020 as String)
         }
     }
@@ -214,6 +222,8 @@ struct DolbyVisionTests {
         let format: OSType
         let zeroCopy: Bool
         let converting: Bool
+        /// The decoder's own report, which reads the frames themselves.
+        let hardwareDecode: Bool
         let matrix: String?
         let transfer: String?
         /// Frame-average non-linear R'G'B', from a sparse grid of samples.
@@ -253,6 +263,7 @@ struct DolbyVisionTests {
                 format: CVPixelBufferGetPixelFormatType(frame.pixelBuffer),
                 zeroCopy: frame.isHardwareDecoded,
                 converting: decoder.isConvertingDolbyVision,
+                hardwareDecode: decoder.isHardwareActive,
                 matrix: Self.attachment(frame.pixelBuffer, kCVImageBufferYCbCrMatrixKey),
                 transfer: Self.attachment(frame.pixelBuffer, kCVImageBufferTransferFunctionKey),
                 meanRGB: Self.meanRGB(frame.pixelBuffer)
