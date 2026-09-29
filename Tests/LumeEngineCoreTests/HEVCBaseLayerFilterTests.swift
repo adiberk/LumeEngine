@@ -100,15 +100,22 @@ struct HEVCBaseLayerFilterTests {
         let pps = Self.nal(type: 34, layer: 0), sei = Self.nal(type: 39, layer: 0)
         let sps1 = Self.nal(type: 33, layer: 1), pps1 = Self.nal(type: 34, layer: 1)
 
-        let merged = header + [6]
-            + array(32, [vps]) + array(33, [sps]) + array(34, [pps]) + array(39, [sei])
-            + array(33, [sps1]) + array(34, [pps1])
-        let expected = header + [4] + array(32, [vps]) + array(33, [sps]) + array(34, [pps]) + array(39, [sei])
+        // Joined through a typed variadic, not `a + [6] + b + …`: a long `+`
+        // chain over untyped literals is beyond Swift 6.2's type checker.
+        func bytes(_ parts: [UInt8]...) -> [UInt8] { Array(parts.joined()) }
+
+        let merged = bytes(
+            header, [6],
+            array(32, [vps]), array(33, [sps]), array(34, [pps]), array(39, [sei]),
+            array(33, [sps1]), array(34, [pps1])
+        )
+        let expected = bytes(header, [4], array(32, [vps]), array(33, [sps]), array(34, [pps]), array(39, [sei]))
         merged.withUnsafeBytes { #expect(HEVCBaseLayerFilter.baseLayerHVCC($0) == expected) }
 
         // Mixed within one array: the array stays, with a corrected count.
-        let shared = header + [1] + array(33, [sps, sps1])
-        shared.withUnsafeBytes { #expect(HEVCBaseLayerFilter.baseLayerHVCC($0) == header + [1] + array(33, [sps])) }
+        let shared = bytes(header, [1], array(33, [sps, sps1]))
+        let sharedExpected = bytes(header, [1], array(33, [sps]))
+        shared.withUnsafeBytes { #expect(HEVCBaseLayerFilter.baseLayerHVCC($0) == sharedExpected) }
 
         expected.withUnsafeBytes { #expect(HEVCBaseLayerFilter.baseLayerHVCC($0) == nil, "single-layer hvcC stays as is") }
         Array(merged.dropLast()).withUnsafeBytes { #expect(HEVCBaseLayerFilter.baseLayerHVCC($0) == nil, "truncated: untouched") }

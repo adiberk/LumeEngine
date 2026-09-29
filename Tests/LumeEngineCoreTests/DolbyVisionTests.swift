@@ -454,11 +454,15 @@ private struct Reference {
             out = c[0] + c[1] * s + c[2] * s * s
         case .mmr(let constant, let rows):
             let (y, u, v) = (sig[0], sig[1], sig[2])
-            let terms = [y, u, v, y * u, y * v, u * v, y * u * v]
-            out = rows.enumerated().reduce(constant) { total, row in
-                let order = Double(row.offset + 1)
-                return total + zip(row.element, terms).reduce(0) { $0 + $1.0 * pow($1.1, order) }
+            let terms: [Double] = [y, u, v, y * u, y * v, u * v, y * u * v]
+            var total: Double = constant
+            for (row, coefficients) in rows.enumerated() {
+                let order = Double(row + 1)
+                for (coefficient, term) in zip(coefficients, terms) {
+                    total += coefficient * pow(term, order)
+                }
             }
+            out = total
         }
         return min(max(out, 0), 1)
     }
@@ -480,12 +484,28 @@ private struct Reference {
         0.01736321, -0.04725154, 1.03004253,
     ]
 
+    // Loops with explicit types, not `map { reduce(0) { … } }`: the closure
+    // form is beyond Swift 6.2's type checker (CI's Xcode 26.3).
     private static func apply(_ m: [Double], _ v: [Double]) -> [Double] {
-        (0..<3).map { row in (0..<3).reduce(0) { $0 + m[row * 3 + $1] * v[$1] } }
+        var result = [Double](repeating: 0, count: 3)
+        for row in 0..<3 {
+            var sum: Double = 0
+            for k in 0..<3 { sum += m[row * 3 + k] * v[k] }
+            result[row] = sum
+        }
+        return result
     }
 
     private static func multiply(_ a: [Double], _ b: [Double]) -> [Double] {
-        (0..<9).map { index in (0..<3).reduce(0) { $0 + a[index / 3 * 3 + $1] * b[$1 * 3 + index % 3] } }
+        var result = [Double](repeating: 0, count: 9)
+        for row in 0..<3 {
+            for column in 0..<3 {
+                var sum: Double = 0
+                for k in 0..<3 { sum += a[row * 3 + k] * b[k * 3 + column] }
+                result[row * 3 + column] = sum
+            }
+        }
+        return result
     }
 
     private static let m1 = 2610.0 / 16384, m2 = 2523.0 / 4096 * 128
