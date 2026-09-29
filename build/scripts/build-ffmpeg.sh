@@ -9,6 +9,8 @@
 #  - LGPL only (no --enable-gpl), decode/demux only (no encoders/muxers)
 #  - --disable-autodetect for reproducible builds; SDK-provided deps enabled explicitly
 #  - VideoToolbox + AudioToolbox + SecureTransport (TLS without OpenSSL)
+#  - dav1d (BSD-2-Clause) for software AV1: FFmpeg's native AV1 decoder only
+#    drives hardware, which most Apple devices lack (build-dav1d.sh)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -23,6 +25,15 @@ TARBALL="$BUILD_DIR/ffmpeg-${FFMPEG_VERSION}.tar.xz"
 SRC_DIR="$BUILD_DIR/src/ffmpeg-${FFMPEG_VERSION}-${PLATFORM}"
 PREFIX="$BUILD_DIR/output/$PLATFORM"
 JOBS="$(sysctl -n hw.ncpu)"
+
+# dav1d first: FFmpeg's configure links it through pkg-config.
+"$SCRIPT_DIR/build-dav1d.sh" "$PLATFORM"
+DAV1D_VERSION="$(python3 -c "import json;print(json.load(open('$BUILD_DIR/versions.json'))['dav1d']['version'])")"
+DAV1D_PREFIX="$BUILD_DIR/src/dav1d-${DAV1D_VERSION}-${PLATFORM}/install"
+# LIBDIR, not PATH: only this slice's dav1d may be found — never a host
+# (Homebrew) copy built for another platform.
+export PKG_CONFIG_LIBDIR="$DAV1D_PREFIX/lib/pkgconfig"
+unset PKG_CONFIG_PATH
 
 echo "==> FFmpeg ${FFMPEG_VERSION} for ${PLATFORM} (target ${TARGET}, sdk ${SDK})"
 
@@ -74,6 +85,7 @@ cd "$SRC_DIR"
     --enable-securetransport \
     --enable-videotoolbox \
     --enable-audiotoolbox \
+    --enable-libdav1d \
     --enable-swscale \
     --enable-swresample \
     --enable-avfilter \
@@ -84,6 +96,8 @@ make -j"$JOBS" > "$BUILD_DIR/make-$PLATFORM.log" 2>&1 || {
     echo "make failed — tail of log:"; tail -40 "$BUILD_DIR/make-$PLATFORM.log"; exit 1; }
 rm -rf "$PREFIX"
 make install >> "$BUILD_DIR/make-$PLATFORM.log" 2>&1
+# make-xcframework.sh merges every lib*.a in here into libffmpeg.a.
+cp "$DAV1D_PREFIX/lib/libdav1d.a" "$PREFIX/lib/"
 
 echo "==> Installed to $PREFIX"
 ls "$PREFIX/lib"

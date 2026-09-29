@@ -28,13 +28,13 @@ jobs:
           path: build/output
           key: ffmpeg-${{ hashFiles('build/versions.json', 'build/scripts/**', 'build/patches/**') }}-macos-arm64
 
-      - name: Download FFmpeg source
+      - name: Download FFmpeg and dav1d sources
         if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
-        run: |
-          URL=$(python3 -c "import json;print(json.load(open('build/versions.json'))['ffmpeg']['url'])")
-          SHA=$(python3 -c "import json;print(json.load(open('build/versions.json'))['ffmpeg']['sha256'])")
-          curl -sL -o "build/$(basename "$URL")" "$URL"
-          echo "$SHA  build/$(basename "$URL")" | shasum -a 256 -c -
+        run: build/scripts/fetch-sources.sh
+
+      - name: Install build tooling
+        if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
+        run: brew install meson ninja
 
       - name: Build FFmpeg (macOS slice)
         if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
@@ -84,13 +84,13 @@ jobs:
           path: build/output
           key: ffmpeg-${{ hashFiles('build/versions.json', 'build/scripts/**', 'build/patches/**') }}-${{ matrix.slice }}
 
-      - name: Download FFmpeg source
+      - name: Download FFmpeg and dav1d sources
         if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
-        run: |
-          URL=$(python3 -c "import json;print(json.load(open('build/versions.json'))['ffmpeg']['url'])")
-          SHA=$(python3 -c "import json;print(json.load(open('build/versions.json'))['ffmpeg']['sha256'])")
-          curl -sL -o "build/$(basename "$URL")" "$URL"
-          echo "$SHA  build/$(basename "$URL")" | shasum -a 256 -c -
+        run: build/scripts/fetch-sources.sh
+
+      - name: Install build tooling
+        if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
+        run: brew install meson ninja
 
       - name: Build FFmpeg (${{ matrix.slice }})
         if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
@@ -134,14 +134,11 @@ jobs:
             exit 1
           fi
           echo "all 7 platform SDKs present"
-      - name: Download FFmpeg source
-        run: |
-          URL=$(python3 -c "import json;print(json.load(open('build/versions.json'))['ffmpeg']['url'])")
-          SHA=$(python3 -c "import json;print(json.load(open('build/versions.json'))['ffmpeg']['sha256'])")
-          curl -sL -o "build/$(basename "$URL")" "$URL"
-          echo "$SHA  build/$(basename "$URL")" | shasum -a 256 -c -
+      - name: Download FFmpeg and dav1d sources
+        run: build/scripts/fetch-sources.sh
       - name: Install build tooling
-        run: brew install nasm
+        # nasm: dav1d's and FFmpeg's x86_64 assembly; meson + ninja: dav1d.
+        run: brew install nasm meson ninja
       - name: Build all slices
         run: |
           for p in macos-arm64 macos-x86_64 ios-arm64 ios-sim-arm64 ios-sim-x86_64 tvos-arm64 tvos-sim-arm64 tvos-sim-x86_64 xros-arm64 xros-sim-arm64; do

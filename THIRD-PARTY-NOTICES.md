@@ -43,8 +43,8 @@ kept in-repo, unobfuscated, and applied by the build script, which is how the
 
 ### Enabled dependencies, and their licenses
 
-All external dependencies currently come from the Apple SDKs — nothing else is vendored
-or statically pulled in:
+Everything except dav1d comes from the Apple SDKs. dav1d is the one library built from
+source and linked statically (see [its own section](#dav1d--bsd-2-clause)):
 
 | Component | Enabled via | License |
 |---|---|---|
@@ -52,15 +52,36 @@ or statically pulled in:
 | zlib | `--enable-zlib` | zlib license |
 | bzip2 | `--enable-bzlib` | BSD-style (bzip2 license) |
 | libiconv | `--enable-iconv` | LGPL 2.1+ (system library) |
+| dav1d 1.5.4 | `--enable-libdav1d` | BSD-2-Clause (built from source, static) |
 
 Notably **no OpenSSL** — TLS goes through SecureTransport, which keeps the build both
 smaller and LGPL-clean.
 
-`build/versions.json` also lists **dav1d** (BSD-2-Clause) and **libass** (ISC) with
-`"status": "planned"`. They are *not* built or linked today. If you enable them, extend
-this file and add their license texts to [`LICENSES/`](LICENSES) — and note that libass
-pulls in freetype (FTL *or* GPLv2), harfbuzz (MIT), fribidi (LGPL 2.1+), and
-libunibreak (zlib), which changes this table materially.
+`build/versions.json` also lists **libass** (ISC) with `"status": "planned"`. It is
+*not* built or linked today. If you enable it, extend this file and add its license text
+to [`LICENSES/`](LICENSES) — and note that libass pulls in freetype (FTL *or* GPLv2),
+harfbuzz (MIT), fribidi (LGPL 2.1+), and libunibreak (zlib), which changes this table
+materially.
+
+---
+
+## dav1d — BSD-2-Clause
+
+LumeEngine links **dav1d 1.5.4**, VideoLAN's AV1 decoder, for software AV1 decoding.
+FFmpeg's own AV1 decoder only drives hardware, and most Apple chips have no AV1
+hardware decoder. The pinned version, source URL, and SHA-256 are in
+[`build/versions.json`](build/versions.json); the build is performed by
+[`build/scripts/build-dav1d.sh`](build/scripts/build-dav1d.sh), called for every slice by
+`build-ffmpeg.sh`, and the static `libdav1d.a` is merged into `libffmpeg.a` alongside
+FFmpeg's libraries.
+
+- **License**: BSD 2-Clause — full text in
+  [`LICENSES/dav1d-BSD-2-Clause.txt`](LICENSES/dav1d-BSD-2-Clause.txt) (verbatim copy of
+  `COPYING` from the dav1d 1.5.4 tarball). Unmodified: no patches are applied.
+- **Upstream**: <https://code.videolan.org/videolan/dav1d>
+
+BSD-2-Clause is permissive and compatible with the LGPL build; it adds no relinking
+requirement. It does add an attribution requirement for binaries (below).
 
 ---
 
@@ -90,6 +111,9 @@ Your remaining obligations when distributing an application built on LumeEngine:
 - **Include the LGPL 2.1 license text** — `LICENSES/LGPL-2.1.txt`.
 - **Point users at the FFmpeg source you built from**, including your modifications:
   the pinned upstream tarball plus this repository (or your fork of it) is sufficient.
+- **Reproduce dav1d's copyright notice, conditions, and disclaimer** in your
+  documentation or acknowledgements (BSD-2-Clause, clause 2) —
+  `LICENSES/dav1d-BSD-2-Clause.txt` verbatim is sufficient.
 - Keep the engine dynamically linked, or otherwise preserve the ability to relink.
 
 This is not legal advice; it is a description of how this repository is set up to make

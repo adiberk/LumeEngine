@@ -89,7 +89,8 @@ To build FFmpeg yourself instead — required if you change `build/versions.json
 
 ```bash
 # FFmpeg xcframework (10-20 min for one slice)
-curl -sLo build/ffmpeg-9.0.1.tar.xz https://ffmpeg.org/releases/ffmpeg-9.0.1.tar.xz
+brew install meson ninja nasm                    # dav1d's build; nasm only for x86_64 slices
+build/scripts/fetch-sources.sh                   # FFmpeg + dav1d tarballs, SHA-256 verified
 build/scripts/build-ffmpeg.sh macos-arm64        # one slice is enough for local dev
 build/scripts/make-xcframework.sh                # -> BinaryDependencies/FFmpeg.xcframework
 

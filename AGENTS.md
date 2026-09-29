@@ -23,6 +23,8 @@ The consumer app lives in the sibling repo `../Lume`. Most bug reports and featu
 - `BinaryDependencies/FFmpeg.xcframework` exists → local `path:` binary target. This is the development override, so anyone iterating on `build/` tests their own FFmpeg.
 - Otherwise → `binaryTarget(url:checksum:)` against the artifact attached to a GitHub release. Consumers (and a plain `git clone && swift build`) take this path and need nothing from `build/`.
 
+dav1d (software AV1, BSD-2-Clause) is part of that build: `build/scripts/build-dav1d.sh` cross-compiles it with meson for each slice, `build-ffmpeg.sh` calls it and links it via `--enable-libdav1d`, and `libdav1d.a` is merged into `libffmpeg.a`. Its version counts as the FFmpeg build's for everything below.
+
 The artifact URL is versioned by the FFmpeg build it contains, not by the engine release it hangs off: bump it only when `build/versions.json`, the configure flags, or the patch set change — and then in the same change as the pipeline edit, or consumers link a binary that doesn't match the source.
 
 ## Licensing (public repo)
@@ -42,7 +44,8 @@ swift run LumeEngineDemo                      # macOS demo app with diagnostics 
 Prerequisites:
 - `BinaryDependencies/FFmpeg.xcframework` must exist before anything compiles. Build it once (or after bumping `build/versions.json`):
   ```bash
-  curl -sLo build/ffmpeg-9.0.1.tar.xz https://ffmpeg.org/releases/ffmpeg-9.0.1.tar.xz
+  brew install meson ninja nasm                # dav1d's build; nasm only for x86_64 slices
+  build/scripts/fetch-sources.sh               # FFmpeg + dav1d tarballs, SHA-256 verified
   build/scripts/build-ffmpeg.sh macos-arm64    # one slice is enough for local dev
   build/scripts/make-xcframework.sh
   ```
