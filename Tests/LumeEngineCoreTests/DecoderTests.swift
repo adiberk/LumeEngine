@@ -143,8 +143,10 @@ struct DecoderTests {
         }
         var failure: EngineError?
         var reachedEndOfStream = false
+        var downgraded = false
         while let event = await decodeEvents.next() {
             if case .failed(let error) = event { failure = error; break }
+            if case .downgradedToSoftware = event { downgraded = true }
             if case .endOfStream = event { reachedEndOfStream = true; break }
         }
         let hardwareActive = decoder.isHardwareActive
@@ -153,17 +155,32 @@ struct DecoderTests {
         #expect(failure == nil, "AV1 must decode on this host: \(failure.map(String.init(describing:)) ?? "")")
         #expect(reachedEndOfStream)
         let collected = await collector.value
-        #expect(collected.count >= 90, "4 s @ 24 fps ≈ 96 frames, got \(collected.count)")
         #expect(collected.allSatisfy { $0.width == 320 && $0.height == 180 })
         let ptsValues = collected.map(\.pts)
         #expect(zip(ptsValues, ptsValues.dropFirst()).allSatisfy { $0 < $1 }, "output PTS must be monotonic")
 
-        // Hardware exactly where the chip has an AV1 decoder, software
-        // (dav1d) everywhere else — never the hardware-only native decoder
-        // on a chip that cannot run it.
         let chipDecodesAV1 = VTIsHardwareDecodeSupported(kCMVideoCodecType_AV1)
-        #expect(hardwareActive == chipDecodesAV1)
-        #expect(Set(collected.map(\.hardware)) == [chipDecodesAV1])
+        if !chipDecodesAV1 {
+            // The case that played black: no AV1 hardware (Apple TV 4K, M1,
+            // …). dav1d from the first frame — no failed hardware attempt,
+            // nothing lost.
+            #expect(!downgraded, "without AV1 hardware the hardware path must not even be tried")
+            #expect(!hardwareActive)
+            #expect(collected.allSatisfy { !$0.hardware })
+            #expect(collected.count >= 90, "4 s @ 24 fps ≈ 96 frames, got \(collected.count)")
+        } else if downgraded {
+            // VideoToolbox claimed AV1 but failed — CI's virtualized macOS
+            // does exactly that. The engine's ordinary recovery: rebuild on
+            // dav1d, report it, resume at the next keyframe (one GOP, 24
+            // frames, of the fixture).
+            #expect(!hardwareActive)
+            let afterOneLostGOP: Int = 66 // 96 frames − one 24-frame GOP − slack
+            #expect(collected.count >= afterOneLostGOP, "at most one GOP lost to the recovery, got \(collected.count)")
+        } else {
+            #expect(hardwareActive)
+            #expect(collected.allSatisfy { $0.hardware })
+            #expect(collected.count >= 90, "4 s @ 24 fps ≈ 96 frames, got \(collected.count)")
+        }
         // 10-bit stays 10-bit on either path.
         #expect(Set(collected.map(\.format)).isSubset(of: [
             kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
