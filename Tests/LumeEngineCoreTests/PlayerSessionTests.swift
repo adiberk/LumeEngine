@@ -149,6 +149,26 @@ struct PlayerSessionTests {
         await session.shutdown()
     }
 
+    @Test("two seeks close together skip the second one's keyframe-backward stretch too", .timeLimit(.minutes(1)))
+    func twoQuickSeeks() async throws {
+        // basic.mp4 has a keyframe every second: a seek to 7.5 s lands on the one at 7.0 s,
+        // and the half second between is decoded but never shown, for each seek, however
+        // close together they come.
+        let session = makeSession()
+        let info = try await session.open(url: try Fixtures.path("basic.mp4"))
+        await session.play()
+        _ = await eventually { await session.state == .playing }
+
+        await session.seekTwice(to: 3.5, then: 7.5)
+        let target = info.startTime + MediaTime.microseconds(7.5)
+        let playing = await eventually { await session.position > 7.6 }
+        #expect(playing, "playback goes on from the second seek")
+        let first = session.renderer.enqueuedLowWaterMark.video
+        #expect(first >= target, "the first frame shown after the second seek is at its target, not at \(Double(first - info.startTime) / 1_000_000) s")
+
+        await session.shutdown()
+    }
+
     @Test("startPosition opens at the requested resume point", .timeLimit(.minutes(1)))
     func startPosition() async throws {
         // Resume positions must seek before the demuxer's first read (some
@@ -442,5 +462,14 @@ struct PlayerSessionTests {
         _ = try await session.open(url: try Fixtures.path("forcedsubs.mkv"))
         #expect(await session.selectedSubtitleTrackIndex == nil, "empty preferences must behave exactly as before")
         await session.shutdown()
+    }
+}
+
+extension PlayerSession {
+    /// Two seeks in one turn of the session, so the first one's answer comes after the second
+    /// was asked for, as two presses close together do.
+    func seekTwice(to first: Double, then second: Double) {
+        seek(to: first)
+        seek(to: second)
     }
 }

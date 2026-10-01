@@ -143,6 +143,9 @@ public actor PlayerSession {
     /// Set when a seek completed and the landing position still needs to be
     /// verified against the first actually-delivered frames.
     private var seekLandingTarget: Int64?
+    /// How far before a seek target a keyframe landing is still that seek (and its frames
+    /// are skipped on the way, not shown); further back, the demuxer didn't honor it.
+    static let seekBackwardSlack = MediaTime.microseconds(30)
 
     // Stall watchdog (PLAN.md §3.3 — silence is never an acceptable failure mode).
     /// Watchdog progress signal: playhead + buffered media (see `runStallWatchdog`).
@@ -780,11 +783,15 @@ public actor PlayerSession {
             openContinuation?.resume(throwing: error)
             openContinuation = nil
 
-        case .didSeek(_, let serial):
+        case .didSeek(let answered, let serial):
             // The source answered a seek: whatever failed before is behind it.
             sourceFailure = nil
             currentSerial = serial
-            renderer.flush(acceptingSerial: serial)
+            // The keyframe-backward stretch is decoded but never shown (see
+            // `SystemRenderer.flush(acceptingSerial:skipping:)`). By the answer's own
+            // target: with two seeks close together, `pendingSeekTarget` is already the
+            // second's when the first is answered, and cleared by the second's answer.
+            renderer.flush(acceptingSerial: serial, skipping: (answered - Self.seekBackwardSlack)..<answered)
             if let target = pendingSeekTarget {
                 // Anchor paused; evaluatePlayback raises the rate once the
                 // lanes are buffered, exactly like a cold start. Running the
@@ -952,9 +959,8 @@ public actor PlayerSession {
         // Backward slack covers a keyframe-backward landing (normal: the late
         // frames snap playback to the target); anything further off means the
         // demuxer did not honor the seek.
-        let backwardSlack = MediaTime.microseconds(30)
         let forwardSlack = MediaTime.microseconds(5)
-        guard landed < target - backwardSlack || landed > target + forwardSlack else { return }
+        guard landed < target - Self.seekBackwardSlack || landed > target + forwardSlack else { return }
 
         // Preserve the current transport state: re-anchoring corrects the
         // timeline, it must not start or stop playback on its own.
