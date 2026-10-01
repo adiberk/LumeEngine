@@ -28,6 +28,12 @@ public final class SystemRenderer: @unchecked Sendable {
     private var videoInput: Channel<VideoFrame>?
     private var audioInput: Channel<AudioFrame>?
     private var acceptedSerial: UInt64 = 0
+    /// Frames in this PTS range are decoded but never shown: the stretch between the
+    /// keyframe a seek landed on and the target asked for. Showing them would play that
+    /// stretch as fast as the renderer can until the clock catches up (a visible sprint at
+    /// every resume and skip). Frames before the range are kept, so a seek that landed
+    /// somewhere else entirely can still be detected and re-anchored.
+    private var skippedRange: Range<Int64>?
     private var lastEnqueuedVideoPTS = MediaTime.noTimestamp
     private var lastEnqueuedAudioPTS = MediaTime.noTimestamp
     private var firstEnqueuedVideoPTS = MediaTime.noTimestamp
@@ -196,10 +202,12 @@ public final class SystemRenderer: @unchecked Sendable {
 
     /// Flushes both renderers and accepts only frames of `serial` from now on.
     /// Call after flushing the decode channels; the clock is re-anchored by the
-    /// following `setRate(_:anchoredAt:)`.
-    public func flush(acceptingSerial serial: UInt64) {
+    /// following `setRate(_:anchoredAt:)`. `skipping` is the stretch just before a
+    /// seek target, decoded on the way there but never shown.
+    public func flush(acceptingSerial serial: UInt64, skipping: Range<Int64>? = nil) {
         lock.lock()
         acceptedSerial = serial
+        skippedRange = skipping
         lastEnqueuedVideoPTS = MediaTime.noTimestamp
         lastEnqueuedAudioPTS = MediaTime.noTimestamp
         firstEnqueuedVideoPTS = MediaTime.noTimestamp
@@ -266,6 +274,7 @@ public final class SystemRenderer: @unchecked Sendable {
         lock.lock()
         let input = videoInput
         let serial = acceptedSerial
+        let skipped = skippedRange
         let isStopped = stopped
         lock.unlock()
         guard let input, !isStopped else { return }
@@ -276,6 +285,7 @@ public final class SystemRenderer: @unchecked Sendable {
                 return
             }
             guard frame.serial == serial else { continue } // stale pre-seek frame
+            if let skipped, skipped.contains(frame.pts) { continue } // on the way to the seek target
             do {
                 let sample = try SampleBufferBuilder.video(from: frame, formatCache: &videoFormatCache)
                 videoRenderer.enqueue(sample)
@@ -293,6 +303,7 @@ public final class SystemRenderer: @unchecked Sendable {
         lock.lock()
         let input = audioInput
         let serial = acceptedSerial
+        let skipped = skippedRange
         let isStopped = stopped
         lock.unlock()
         guard let input, !isStopped else { return }
@@ -303,6 +314,7 @@ public final class SystemRenderer: @unchecked Sendable {
                 return
             }
             guard frame.serial == serial else { continue }
+            if let skipped, skipped.contains(frame.pts) { continue } // on the way to the seek target
             do {
                 let sample = try SampleBufferBuilder.audio(
                     from: frame,
