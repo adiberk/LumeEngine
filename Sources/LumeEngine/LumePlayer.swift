@@ -64,6 +64,15 @@ public final class LumePlayer {
 
     /// Opens `url`, replacing any previous session (each open is a fresh
     /// engine session — PLAN.md §3.1).
+    /// The session's diagnostics (renderer health, buffering, bytes delivered), for an app's
+    /// logs when something a person hears isn't in the events; nil with nothing loaded.
+    public var diagnostics: PlayerSession.Diagnostics? {
+        get async {
+            guard let session else { return nil }
+            return await session.diagnostics
+        }
+    }
+
     public func load(url: String) async throws -> MediaInfo {
         await teardownSession()
 
