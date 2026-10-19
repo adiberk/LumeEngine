@@ -24,6 +24,11 @@ public final class LumePlayer {
     public private(set) var duration: Double?
     public private(set) var mediaInfo: MediaInfo?
     public private(set) var lastError: EngineError?
+    /// How many times the session saw no progress for `stallThreshold` seconds while it
+    /// should have been playing (a dead source, a starved network, a silent decoder). A
+    /// seekable source has already been sought to heal itself; a live one is the app's to
+    /// recover (reconnect).
+    public private(set) var stalls = 0
     /// True while the active decode path is VideoToolbox.
     public private(set) var isHardwareDecoding = false
     /// Text of the currently visible subtitle cue(s), `nil` when none.
@@ -176,7 +181,9 @@ public final class LumePlayer {
         case .didSeek(let position):
             self.position = position
         case .stalled:
-            break // app-level recovery hook; Lume wires this to its retry controller
+            // The app's to recover: a live source that stays connected and sends nothing
+            // never errors, so this is its only sign of death (HomeTV reconnects on it).
+            stalls += 1
         case .error(let error):
             lastError = error
         }

@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+@testable import LumeEngine
 @testable import LumeEngineCore
 
 @Suite("Resilience", .serialized)
@@ -24,6 +25,17 @@ struct ResilienceTests {
             try? await Task.sleep(for: .milliseconds(100))
         }
         return false
+    }
+
+    /// `eventually` for what the main actor holds (LumePlayer).
+    @MainActor
+    private func until(_ timeout: TimeInterval, _ condition: () -> Bool) async -> Bool {
+        let deadline = Date(timeIntervalSinceNow: timeout)
+        while Date() < deadline {
+            if condition() { return true }
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        return condition()
     }
 
     @Test("HTTP playback works against a local server", .timeLimit(.minutes(1)))
@@ -170,6 +182,22 @@ struct ResilienceTests {
         let teardownStart = Date()
         await session.shutdown()
         #expect(Date().timeIntervalSince(teardownStart) < 6, "teardown must interrupt blocked I/O")
+    }
+
+    @Test("a stall reaches the app through LumePlayer", .timeLimit(.minutes(2)))
+    @MainActor
+    func stallReachesTheApp() async throws {
+        let server = try TortureHTTPServer(mode: .stallAfter(prefix: 1_000_000, file: Fixtures.url("wrap.ts")))
+        defer { server.stop() }
+        let player = LumePlayer(configuration: makeConfiguration(ioTimeout: nil, stallThreshold: 2))
+        _ = try await player.load(url: server.url)
+        player.play()
+        _ = await until(10) { player.state == .playing }
+        // A live source gone quiet never errors: the watchdog's stall is the app's only word
+        // that it's dead, to reconnect (a real Apple TV froze two minutes, 2026-10-19).
+        let heard = await until(30) { player.stalls > 0 }
+        #expect(heard, "the stall must reach the app; the player says \(player.state)")
+        await player.stop()
     }
 
     @Test("mid-stream connection drop does not hang the session", .timeLimit(.minutes(2)))
