@@ -420,9 +420,11 @@ public final class SystemRenderer: @unchecked Sendable {
 
     // MARK: Pumps (render queues)
 
-    /// Feeds the video renderer. `requestMediaDataWhenReady` only re-fires on
-    /// readiness transitions, so on starvation we self-schedule a retry — the
-    /// pump never silently stops (the classic "spinner stuck forever" failure, PLAN.md §3.3).
+    /// Feeds the video renderer. On starvation it stops the renderer asking and
+    /// asks again after a short wait — the pump never silently stops (the classic
+    /// "spinner stuck forever" failure, PLAN.md §3.3), and never spins: a renderer
+    /// still asking re-fires the block back to back on a real Apple TV, 99% of a
+    /// core for as long as a dead live source stayed connected.
     private func pumpVideo() {
         lock.lock()
         let input = videoInput
@@ -430,10 +432,16 @@ public final class SystemRenderer: @unchecked Sendable {
         let skipped = skippedRange
         let isStopped = stopped
         lock.unlock()
-        guard let input, !isStopped else { return }
+        guard let input, !isStopped else {
+            videoRenderer.stopRequestingMediaData()
+            // Asked again only while the lane is attached (the retry checks).
+            if !isStopped { scheduleVideoRetry() }
+            return
+        }
 
         while videoRenderer.isReadyForMoreMediaData {
             guard let frame = input.tryReceive() else {
+                videoRenderer.stopRequestingMediaData()
                 scheduleVideoRetry()
                 return
             }
@@ -462,7 +470,12 @@ public final class SystemRenderer: @unchecked Sendable {
         let skipped = skippedRange
         let isStopped = stopped || audioFeedStopped
         lock.unlock()
-        guard let input, !isStopped else { return }
+        guard let input, !isStopped else {
+            audioRenderer.stopRequestingMediaData()
+            // Asked again only while the lane is attached (the retry checks).
+            if !isStopped { scheduleAudioRetry() }
+            return
+        }
 
         // The route narrowed (HDMI surround → AirPlay stereo): audio already
         // decoded for the wider route must not reach the renderer, which
@@ -479,6 +492,7 @@ public final class SystemRenderer: @unchecked Sendable {
 
         while audioRenderer.isReadyForMoreMediaData {
             guard let frame = input.tryReceive() else {
+                audioRenderer.stopRequestingMediaData()
                 scheduleAudioRetry()
                 return
             }
@@ -533,8 +547,14 @@ public final class SystemRenderer: @unchecked Sendable {
             guard let self else { return }
             self.lock.lock()
             self.videoPumpScheduled = false
+            let attached = self.videoLaneAttached && !self.stopped
             self.lock.unlock()
-            self.pumpVideo()
+            guard attached else { return }
+            // One request at a time, whatever re-armed it meanwhile (a lane attached again).
+            self.videoRenderer.stopRequestingMediaData()
+            self.videoRenderer.requestMediaDataWhenReady(on: self.videoQueue) { [weak self] in
+                self?.pumpVideo()
+            }
         }
     }
 
@@ -548,8 +568,14 @@ public final class SystemRenderer: @unchecked Sendable {
             guard let self else { return }
             self.lock.lock()
             self.audioPumpScheduled = false
+            let attached = self.audioLaneAttached && !self.stopped
             self.lock.unlock()
-            self.pumpAudio()
+            guard attached else { return }
+            // One request at a time, whatever re-armed it meanwhile (a lane attached again).
+            self.audioRenderer.stopRequestingMediaData()
+            self.audioRenderer.requestMediaDataWhenReady(on: self.audioQueue) { [weak self] in
+                self?.pumpAudio()
+            }
         }
     }
 }
