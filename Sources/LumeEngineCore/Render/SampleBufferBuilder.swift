@@ -10,19 +10,35 @@ import CoreMedia
 /// audible as continuous crackling. Like mpv's ao_avfoundation, anchor once
 /// and advance by exact sample counts; fall back to the container PTS only on
 /// genuine discontinuities (seek flush, stream gap, format change).
+///
+/// A gap counts as genuine once two frames in a row disagree with the sample
+/// count by the same amount. A container's labels can drift a frame at a time
+/// without any gap: an MPEG-TS PES carries one time for several frames, and
+/// the demuxer stamps the frames after the first by the frame length it probed
+/// at the start, which goes stale when a relay fails over mid-connection from
+/// an AAC-LC source (1024 samples) to an HE-AAC one (2048). Re-anchoring to
+/// those labels stepped the audio back and forth several times a second.
 struct AudioTimeline {
     /// Anything below this is timestamp quantization/jitter to be absorbed;
     /// anything above is a real gap the synchronizer must see.
     private static let discontinuityToleranceUs: Int64 = 40_000
+    /// Two frames' disagreements this close are one lasting step. Container
+    /// rounding is under a millisecond; labels spread by a stale frame length
+    /// drift by a whole frame's difference (10 ms or more) from frame to frame.
+    private static let sameStepUs: Int64 = 4_000
 
     private var anchorSampleValue: Int64 = 0
     private var samplesSinceAnchor: Int64 = 0
     private var sampleRate = 0
     private var serial: UInt64 = 0
     private var hasAnchor = false
+    /// The last frame's disagreement with the sample count, while it was past
+    /// the tolerance; a gap until the next frame shows the same.
+    private var unconfirmedStepUs: Int64?
 
     mutating func reset() {
         hasAnchor = false
+        unconfirmedStepUs = nil
     }
 
     /// Sample-accurate presentation time for `frame` (timescale = sample rate,
@@ -31,7 +47,7 @@ struct AudioTimeline {
         if hasAnchor, frame.sampleRate == sampleRate, frame.serial == serial {
             let expectedValue = anchorSampleValue + samplesSinceAnchor
             let expectedUs = av_rescale(expectedValue, 1_000_000, Int64(sampleRate))
-            if !MediaTime.isValid(frame.pts) || abs(frame.pts - expectedUs) <= Self.discontinuityToleranceUs {
+            if !isLastingStep(MediaTime.isValid(frame.pts) ? frame.pts - expectedUs : 0) {
                 samplesSinceAnchor += Int64(frame.sampleCount)
                 return CMTime(value: expectedValue, timescale: CMTimeScale(sampleRate))
             }
@@ -42,7 +58,20 @@ struct AudioTimeline {
         anchorSampleValue = av_rescale(pts, Int64(sampleRate), 1_000_000)
         samplesSinceAnchor = Int64(frame.sampleCount)
         hasAnchor = true
+        unconfirmedStepUs = nil
         return CMTime(value: anchorSampleValue, timescale: CMTimeScale(sampleRate))
+    }
+
+    /// Whether a frame `stepUs` off the sample count marks a genuine gap: past
+    /// the tolerance, and the same step the frame before it showed.
+    private mutating func isLastingStep(_ stepUs: Int64) -> Bool {
+        guard abs(stepUs) > Self.discontinuityToleranceUs else {
+            unconfirmedStepUs = nil
+            return false
+        }
+        if let unconfirmedStepUs, abs(stepUs - unconfirmedStepUs) <= Self.sameStepUs { return true }
+        unconfirmedStepUs = stepUs
+        return false
     }
 }
 

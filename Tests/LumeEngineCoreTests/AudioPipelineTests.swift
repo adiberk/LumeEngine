@@ -229,12 +229,69 @@ struct AudioPipelineTests {
         let second = timeline.presentationTime(for: try stubFrame(pts: 21_000, serial: 0))
         #expect(second == CMTime(value: 1_024, timescale: 48_000))
 
-        // Genuine gap (> 40 ms): re-anchor at the container PTS.
+        // Genuine gap (> 40 ms): the first frame past it is held to the count
+        // until the next one shows the same step, then both re-anchor there.
         let afterGap = timeline.presentationTime(for: try stubFrame(pts: 500_000, serial: 0))
-        #expect(afterGap == CMTime(value: 24_000, timescale: 48_000)) // 0.5 s × 48 kHz
+        #expect(afterGap == CMTime(value: 2_048, timescale: 48_000))
+        let confirmed = timeline.presentationTime(for: try stubFrame(pts: 521_333, serial: 0))
+        #expect(confirmed == CMTime(value: 25_024, timescale: 48_000)) // 0.521333 s × 48 kHz
 
-        // New serial after a seek flush: re-anchor even if the PTS is close.
-        let afterSeek = timeline.presentationTime(for: try stubFrame(pts: 521_000, serial: 1))
-        #expect(afterSeek == CMTime(value: 25_008, timescale: 48_000)) // 0.521 s × 48 kHz
+        // New serial after a seek flush: re-anchor at once, even if the PTS is close.
+        let afterSeek = timeline.presentationTime(for: try stubFrame(pts: 542_000, serial: 1))
+        #expect(afterSeek == CMTime(value: 26_016, timescale: 48_000)) // 0.542 s × 48 kHz
+    }
+
+    /// Frames whose container times were spread by a frame length the stream
+    /// no longer has: one PES time per packet of several frames, the frames
+    /// after the first stamped by the length the demuxer probed at the start.
+    /// An IPTV relay that fails over from an AAC-LC source (1024 samples) to an
+    /// HE-AAC one (2048) mid-connection hands over exactly this.
+    private func spreadFrames(
+        packets: Int, framesPerPacket: Int, samples: Int32, labelledSamples: Int64
+    ) throws -> [AudioFrame] {
+        let packetUs = Int64(framesPerPacket) * Int64(samples) * 1_000_000 / 48_000
+        var frames: [AudioFrame] = []
+        for packet in 0..<packets {
+            for index in 0..<framesPerPacket {
+                let pts = Int64(packet) * packetUs + Int64(index) * labelledSamples * 1_000_000 / 48_000
+                frames.append(try #require(AudioFrame.silence(
+                    pts: pts, serial: 0, sampleRate: 48_000, channels: 2, sampleCount: samples
+                )))
+            }
+        }
+        return frames
+    }
+
+    @Test("audio timeline: frames labelled by a stale frame length stay contiguous", arguments: [
+        // HE-AAC frames (2048) labelled as AAC-LC (1024): the labels run behind.
+        (Int32(2_048), Int64(1_024)),
+        // AAC-LC frames labelled as HE-AAC: the labels run ahead.
+        (Int32(1_024), Int64(2_048)),
+    ])
+    func timelineIgnoresSpreadLabels(samples: Int32, labelledSamples: Int64) throws {
+        let frames = try spreadFrames(packets: 8, framesPerPacket: 5, samples: samples, labelledSamples: labelledSamples)
+        var timeline = AudioTimeline()
+        var expected: Int64 = 0
+        for frame in frames {
+            let pts = timeline.presentationTime(for: frame)
+            #expect(pts == CMTime(value: expected, timescale: 48_000), "buffer labelled \(frame.pts) µs moved off the sample count")
+            expected += Int64(frame.sampleCount)
+        }
+    }
+
+    @Test("audio timeline: a lasting step back re-anchors once the next frame agrees")
+    func timelineReanchorsOnALastingStepBack() throws {
+        func frame(_ pts: Int64) throws -> AudioFrame {
+            try #require(AudioFrame.silence(pts: pts, serial: 0, sampleRate: 48_000, channels: 2, sampleCount: 1_024))
+        }
+        var timeline = AudioTimeline()
+        _ = timeline.presentationTime(for: try frame(1_000_000))
+        _ = timeline.presentationTime(for: try frame(1_021_333))
+        // The source steps back 0.5 s and stays there.
+        _ = timeline.presentationTime(for: try frame(542_667))
+        let confirmed = timeline.presentationTime(for: try frame(564_000))
+        #expect(confirmed == CMTime(value: 27_072, timescale: 48_000)) // 0.564 s × 48 kHz
+        let next = timeline.presentationTime(for: try frame(585_333))
+        #expect(next == CMTime(value: 28_096, timescale: 48_000))
     }
 }
