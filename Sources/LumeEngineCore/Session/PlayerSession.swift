@@ -451,6 +451,12 @@ public actor PlayerSession {
         public let timelineSeams: Int
         /// Packets a reconnected source sent again and the demuxer dropped.
         public let replayedPackets: Int
+        /// Seconds of picture (each picture one frame interval of the measured cadence)
+        /// and of sound handed to the renderers since open — diff across heartbeats
+        /// against how far each lane reached (playhead plus lead) for how much of the
+        /// stream arrived.
+        public let enqueuedVideoSeconds: Double
+        public let enqueuedAudioSeconds: Double
         public let startup: StartupTimeline
         public let lastStallReason: StallReason?
         /// The display mode the video wants (see `displayCriteria`).
@@ -475,7 +481,7 @@ public actor PlayerSession {
             if let error = rendererHealth.videoError { health += " vErr(\(error))" }
             if let error = rendererHealth.audioError { health += " aErr(\(error))" }
             var line = String(
-                format: "state=%@ playhead=%.2fs vq=%@ vp=%@ aq=%@ ap=%@ renderers=%@ demuxEOF=%@ read=%.1fMB seams=%ld dup=%ld",
+                format: "state=%@ playhead=%.2fs vq=%@ vp=%@ aq=%@ ap=%@ renderers=%@ demuxEOF=%@ read=%.1fMB seams=%ld dup=%ld fed=%.1fs/%.1fs",
                 state, playheadSeconds,
                 lane(videoQueue, lead: videoLeadSeconds, first: videoFirstSeconds),
                 packets(videoPacketQueue),
@@ -483,7 +489,8 @@ public actor PlayerSession {
                 packets(audioPacketQueue),
                 health, sourceLost ? "lost" : demuxAtEOF ? "yes" : "no",
                 Double(deliveredBytes) / 1_048_576,
-                timelineSeams, replayedPackets
+                timelineSeams, replayedPackets,
+                enqueuedVideoSeconds, enqueuedAudioSeconds
             )
             if let lastStallReason { line += " stall=\(lastStallReason.rawValue)" }
             if let displayCriteria { line += " display=\(displayCriteria)" }
@@ -498,6 +505,7 @@ public actor PlayerSession {
         let playhead = renderer.currentTime
         let highWater = renderer.enqueuedHighWaterMark
         let lowWater = renderer.enqueuedLowWaterMark
+        let enqueued = renderer.enqueuedMedia
         func lead(_ mark: Int64) -> Double {
             guard MediaTime.isValid(mark), MediaTime.isValid(playhead), mark > playhead else { return 0 }
             return MediaTime.seconds(mark - playhead)
@@ -523,6 +531,8 @@ public actor PlayerSession {
             deliveredBytes: demuxer?.deliveredBytes ?? 0,
             timelineSeams: demuxer?.timelineSeams ?? 0,
             replayedPackets: demuxer?.replayedPackets ?? 0,
+            enqueuedVideoSeconds: enqueued.videoSeconds,
+            enqueuedAudioSeconds: enqueued.audioSeconds,
             startup: startup,
             lastStallReason: lastStallReason,
             displayCriteria: displayCriteria,

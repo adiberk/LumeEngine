@@ -281,6 +281,30 @@ struct ResilienceTests {
         await session.shutdown()
     }
 
+    @Test(
+        "what reaches the renderers says how much of a stream arrived",
+        .timeLimit(.minutes(1)),
+        arguments: [("holes.ts", 0.5), ("surround51.ts", 1.0)]
+    )
+    func enqueuedMediaFillsTheTimeline(fixture: String, filled: Double) async throws {
+        // holes.ts lost every other quarter second of picture and sound, its timestamps
+        // kept: the clock plays through the holes, so only what was handed over shows them.
+        let session = PlayerSession(configuration: makeConfiguration(stallThreshold: 30))
+        _ = try await session.open(url: try Fixtures.path(fixture))
+        await session.play()
+        let played = await eventually(timeout: 20) { await session.position > 6 }
+        #expect(played)
+
+        let diagnostics = await session.diagnostics
+        let audioSpan = diagnostics.playheadSeconds + diagnostics.audioLeadSeconds - diagnostics.audioFirstSeconds
+        // From the first picture's start to the end of the last (25 a second); the first
+        // eight pictures count nothing, the cadence not yet measured.
+        let videoSpan = diagnostics.playheadSeconds + diagnostics.videoLeadSeconds - diagnostics.videoFirstSeconds + 1.0 / 25 - 8.0 / 25
+        #expect(abs(diagnostics.enqueuedAudioSeconds / audioSpan - filled) < 0.1, "sound: \(diagnostics)")
+        #expect(abs(diagnostics.enqueuedVideoSeconds / videoSpan - filled) < 0.1, "pictures: \(diagnostics)")
+        await session.shutdown()
+    }
+
     @Test("catch-up chunks that restart their timestamps play straight through", .timeLimit(.minutes(1)))
     func catchUpChunks() async throws {
         let session = PlayerSession(configuration: makeConfiguration(stallThreshold: 4))

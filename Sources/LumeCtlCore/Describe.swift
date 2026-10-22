@@ -207,6 +207,8 @@ struct Describe {
             ("inputMbps", .optional(inputMbps)),
             ("timelineSeams", .int(Int64(diagnostics.timelineSeams))),
             ("replayedPackets", .int(Int64(diagnostics.replayedPackets))),
+            ("enqueuedVideoSeconds", .double(diagnostics.enqueuedVideoSeconds)),
+            ("enqueuedAudioSeconds", .double(diagnostics.enqueuedAudioSeconds)),
             ("lastStallReason", .optional(diagnostics.lastStallReason?.rawValue)),
             ("startup", startup(diagnostics.startup)),
         ])

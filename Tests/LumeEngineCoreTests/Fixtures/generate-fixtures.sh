@@ -16,6 +16,8 @@
 #   anamorphic.ts  — 720x576i PAL SD, pixel aspect 64:45 (a 16:9 picture), untagged colour
 #   hls-live/      — 12 s as six 2 s HLS segments + playlist (served live by the tests)
 #   replay.ts      — 8 s TS whose bytes jump back ~3 s at ~6 s, as a reconnect replays them
+#   holes.ts       — 12 s TS missing every other quarter second of picture and sound, its
+#                    timestamps kept, as a remuxing relay that loses half a stream sends it
 #   ac4.ts         — TS whose first audio (ger) is declared AC-4, which no decoder here plays, then eng AAC
 #   hdr10.mp4      — HEVC Main 10, BT.2020 PQ, mastering display + content light level SEI, HDR10+ per frame
 #   surround51.ts  — 20 s H.264 + AC-3 5.1 MPEG-TS, tone in the centre channel only
@@ -48,6 +50,18 @@ gen wrap.ts \
     -c:v libx264 -preset ultrafast -pix_fmt yuv420p -g 25 \
     -c:a aac -shortest \
     -muxdelay 0 -output_ts_offset 95440 -f mpegts
+
+# Half a stream: every frame a keyframe and every other quarter second's packets dropped
+# with their timestamps kept (7 pictures, then a 0.28 s hole), as a relay's remuxer sent a
+# live channel after its source changed (HomeTV, 2026-10-20: 7 pictures, then 0.27 s).
+gen holes.ts \
+    -f lavfi -i "testsrc2=duration=12:size=320x180:rate=25" \
+    -f lavfi -i "sine=frequency=440:duration=12" \
+    -c:v libx264 -preset ultrafast -pix_fmt yuv420p -g 1 \
+    -c:a aac -shortest -muxdelay 0 \
+    -bsf:v "noise=drop='gte(mod(pts*tb\,0.5)\,0.25)'" \
+    -bsf:a "noise=drop='gte(mod(pts*tb\,0.5)\,0.25)'" \
+    -f mpegts
 
 # 7.1 FLAC: exercises the multichannel path (channel layout must survive
 # decode → resample → CMSampleBuffer, or the renderer plays noise).

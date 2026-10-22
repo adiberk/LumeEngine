@@ -43,6 +43,12 @@ public final class SystemRenderer: @unchecked Sendable {
     /// by a flush): startup diagnostics.
     private var firstVideoEnqueue: TimeInterval?
     private var firstAudioEnqueue: TimeInterval?
+    /// Decoded media handed to the renderers since open (never reset by a flush), by what
+    /// the frames hold rather than their timestamps: pictures, each one frame interval of
+    /// the cadence measured then (none until it is), so a stream that changes its rate
+    /// counts each stretch at its own; sound in samples per sample rate.
+    private var videoSecondsEnqueued = 0.0
+    private var audioSamplesEnqueued: [Int: Int64] = [:]
     /// What the display is actually being handed — format and cadence of the
     /// enqueued frames, after deinterlacing and Dolby Vision conversion. Read
     /// for the display criteria (`PlayerSession.displayCriteria`).
@@ -366,6 +372,17 @@ public final class SystemRenderer: @unchecked Sendable {
         return (firstEnqueuedVideoPTS, firstEnqueuedAudioPTS)
     }
 
+    /// Seconds of picture and of sound handed to the renderers since open. Against the
+    /// stretch of timeline each lane covers, how much of the stream arrived: a whole
+    /// stream fills it, a source that loses packets (a relay remuxing half a channel)
+    /// leaves holes the clock plays through in silence on a held picture.
+    public var enqueuedMedia: (videoSeconds: Double, audioSeconds: Double) {
+        lock.lock()
+        defer { lock.unlock() }
+        let audioSeconds = audioSamplesEnqueued.reduce(0.0) { $0 + Double($1.value) / Double($1.key) }
+        return (videoSecondsEnqueued, audioSeconds)
+    }
+
     /// `systemUptime` of the first decoded frame each lane handed to its
     /// renderer; nil until it has. Startup diagnostics.
     var firstEnqueueUptime: (video: TimeInterval?, audio: TimeInterval?) {
@@ -455,6 +472,7 @@ public final class SystemRenderer: @unchecked Sendable {
                 if !MediaTime.isValid(firstEnqueuedVideoPTS) { firstEnqueuedVideoPTS = frame.pts }
                 if firstVideoEnqueue == nil { firstVideoEnqueue = ProcessInfo.processInfo.systemUptime }
                 videoCadence.observe(pts: frame.pts)
+                if let interval = videoCadence.interval { videoSecondsEnqueued += interval / 1_000_000 }
                 lastVideoFormat = videoFormatCache
                 lock.unlock()
             } catch {
@@ -507,6 +525,7 @@ public final class SystemRenderer: @unchecked Sendable {
                 audioRenderer.enqueue(sample)
                 lock.lock()
                 lastEnqueuedAudioPTS = frame.pts + frame.duration
+                audioSamplesEnqueued[frame.sampleRate, default: 0] += Int64(frame.sampleCount)
                 if !MediaTime.isValid(firstEnqueuedAudioPTS) { firstEnqueuedAudioPTS = frame.pts }
                 if firstAudioEnqueue == nil { firstAudioEnqueue = ProcessInfo.processInfo.systemUptime }
                 lock.unlock()
