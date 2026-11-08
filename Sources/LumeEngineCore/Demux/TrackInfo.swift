@@ -8,6 +8,11 @@ public struct TrackInfo: Sendable, Identifiable, Equatable {
     public struct Video: Sendable, Equatable {
         public let width: Int
         public let height: Int
+        /// The shape of a stored pixel, width over height (1 for square pixels; an anamorphic DVD or
+        /// DVB stream stores 720x576 with pixels of 16/11 or 64/45, shown as 16:9). The stream's own
+        /// says first, then the codec's; 1 when neither says. The picture shown is
+        /// `width * pixelAspect` by `height`.
+        public let pixelAspect: Double
         /// Best-guess frames per second (0 when unknown).
         public let fps: Double
         public let bitDepth: Int

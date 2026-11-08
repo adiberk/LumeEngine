@@ -159,9 +159,21 @@ extension TrackInfo {
 
             let isHDR = par.color_trc == AVCOL_TRC_SMPTE2084 || par.color_trc == AVCOL_TRC_ARIB_STD_B67
 
+            // The pixel's shape: the container's word for the stream first, then the codec's; square when neither says.
+            let streamAspect = st.sample_aspect_ratio
+            let codecAspect = par.sample_aspect_ratio
+            let pixelAspect: Double = if streamAspect.num > 0, streamAspect.den > 0 {
+                Double(streamAspect.num) / Double(streamAspect.den)
+            } else if codecAspect.num > 0, codecAspect.den > 0 {
+                Double(codecAspect.num) / Double(codecAspect.den)
+            } else {
+                1
+            }
+
             video = Video(
                 width: Int(par.width),
                 height: Int(par.height),
+                pixelAspect: pixelAspect,
                 fps: fps,
                 bitDepth: bitDepth,
                 pixelFormatName: pixelFormatName,
