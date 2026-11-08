@@ -467,6 +467,10 @@ public actor PlayerSession {
         public let audioOutput: AudioOutputLayout?
         /// The output route the audio is fitted to.
         public let audioRoute: AudioOutputRoute.Snapshot
+        /// Whether the picture is decoded by VideoToolbox now, judged from the frames
+        /// (`VideoDecoder.isHardwareActive`), so a silent fall to software reads as software;
+        /// nil without a video lane.
+        public let isHardwareDecoding: Bool?
 
         public var description: String {
             func lane(_ queue: (count: Int, seconds: Double)?, lead: Double, first: Double) -> String {
@@ -538,7 +542,8 @@ public actor PlayerSession {
             displayCriteria: displayCriteria,
             audioHealth: audioHealth,
             audioOutput: audioOutput,
-            audioRoute: audioRoute.snapshot
+            audioRoute: audioRoute.snapshot,
+            isHardwareDecoding: videoDecoder?.isHardwareActive
         )
     }
 
