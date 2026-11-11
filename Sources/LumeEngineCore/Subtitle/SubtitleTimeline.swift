@@ -173,6 +173,22 @@ struct SubtitleTimeline: Sendable {
         return active.reversed()
     }
 
+    /// All cues showing at any moment from `start` through `end` (engine µs),
+    /// ordered by start: those already up at `start`, then every one that
+    /// comes up by `end`. For a host that draws the lines itself and moves
+    /// them against the picture, which needs each cue's own times, not only
+    /// what shows now.
+    func cues(from start: Int64, through end: Int64) -> [SubtitleCue] {
+        guard start <= end else { return [] }
+        var found = activeCues(at: start)
+        var index = insertionIndex(for: start)
+        while index < entries.count, entries[index].cue.start <= end {
+            found.append(entries[index].cue)
+            index += 1
+        }
+        return found
+    }
+
     // MARK: Internals
 
     /// First entry starting after `time`.

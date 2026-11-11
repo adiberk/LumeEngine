@@ -72,4 +72,38 @@ struct LumePlayerTests {
 
         await player.stop()
     }
+
+    /// A host drawing the lines itself gets the cues ahead of and behind the
+    /// playhead with their own times on `position`'s clock, so it can show
+    /// them earlier or later than the file has them. The 8 s fixture is read
+    /// whole at once (the read-ahead is 15 s), so both of its cues are held
+    /// from the start: 1–3 s "Hello from LumeEngine", 4–6 s "Second cue".
+    @Test("the picked subtitle's cues come with their times on position's clock", .timeLimit(.minutes(1)))
+    @MainActor
+    func timedSubtitleCues() async throws {
+        var configuration = PlayerConfiguration()
+        configuration.muted = true
+        configuration.bufferTarget = 0.3
+        let player = LumePlayer(configuration: configuration)
+        #expect(player.subtitleCues(from: -60, through: 60).isEmpty, "nothing loaded")
+
+        let info = try await player.load(url: try Fixtures.path("multitrack.mkv"))
+        let track = try #require(info.subtitleTracks.first)
+        player.selectSubtitleTrack(track.index)
+        player.play()
+
+        let deadline = Date(timeIntervalSinceNow: 10)
+        while player.subtitleCues(from: player.position - 60, through: player.position + 60).count < 2 && Date() < deadline {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        let cues = player.subtitleCues(from: player.position - 60, through: player.position + 60)
+        #expect(cues.map(\.text) == ["Hello from LumeEngine", "Second cue"])
+        #expect(cues.map { ($0.start * 10).rounded() / 10 } == [1, 4], "starts on position's clock")
+        #expect(cues.map { ($0.end * 10).rounded() / 10 } == [3, 6])
+        #expect(player.subtitleCues(from: 3.5, through: 3.9).isEmpty, "the gap between them")
+        #expect(player.subtitleCues(from: 2, through: 2).map(\.text) == ["Hello from LumeEngine"])
+
+        await player.stop()
+        #expect(player.subtitleCues(from: -60, through: 60).isEmpty, "stopped")
+    }
 }

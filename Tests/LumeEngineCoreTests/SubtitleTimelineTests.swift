@@ -213,4 +213,43 @@ struct SubtitleTimelineTests {
         #expect(timeline.count <= SubtitleTimeline.capacity)
         #expect(shown(timeline, at: 1_500_000) == ["rewound"])
     }
+
+    // MARK: Cues in a window, with their own times
+
+    /// A host that moves the lines against the picture asks for every cue
+    /// around the playhead with its times: the one already up when the window
+    /// opens (however long ago it started), each one starting within it, and
+    /// none that ended before it or starts after it.
+    @Test("a window lists the cues showing in it, each with its own times, by start")
+    func cuesInAWindow() {
+        var timeline = SubtitleTimeline()
+        timeline.apply(text(1 * second, "gone", end: 2 * second))
+        timeline.apply(text(5 * second, "long sign", end: 40 * second))
+        timeline.apply(text(12 * second, "first", end: 14 * second))
+        timeline.apply(text(13 * second, "overlap", end: 15 * second))
+        timeline.apply(text(20 * second, "edge", end: 22 * second))
+        timeline.apply(text(21 * second, "after", end: 23 * second))
+
+        let window = timeline.cues(from: 10 * second, through: 20 * second)
+        #expect(window.map(\.text) == ["long sign", "first", "overlap", "edge"])
+        #expect(window.first?.start == 5 * second)
+        #expect(window.first?.end == 40 * second)
+
+        #expect(timeline.cues(from: 13 * second, through: 13 * second).map(\.text) == timeline.activeCues(at: 13 * second).map(\.text),
+                "a window of one moment is what shows then")
+        #expect(timeline.cues(from: 20 * second, through: 10 * second).isEmpty)
+    }
+
+    /// On a replacing track an open update is ended by the next one: the
+    /// window hands over the ended times, not the open limit.
+    @Test("a window gives a replacing track's updates the end the next one gave them")
+    func windowOnAReplacingTrack() {
+        var timeline = SubtitleTimeline()
+        timeline.apply(screen(1 * second, "one"))
+        timeline.apply(screen(3 * second, "two"))
+        timeline.apply(screen(6 * second, ""))
+        let window = timeline.cues(from: 0, through: 10 * second)
+        #expect(window.map(\.text) == ["one", "two"])
+        #expect(window.map(\.end) == [3 * second, 6 * second])
+    }
 }

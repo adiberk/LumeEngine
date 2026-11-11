@@ -170,6 +170,28 @@ public final class LumePlayer {
         }
     }
 
+    /// The picked subtitle's cues the engine holds that show at any moment
+    /// from `start` through `end`, each with its own times, in seconds on
+    /// `position`'s clock: for a host that draws the lines itself and moves
+    /// them against the picture (a subtitle running early or late), which
+    /// `subtitleText` and `subtitleImages`, saying only what shows now, can't.
+    ///
+    /// What is held behind the playhead is every cue decoded since the track
+    /// was picked, within the store's limits (thousands of text cues; a
+    /// minute or more of full-HD bitmaps). Ahead of it, only what has been
+    /// decoded: an embedded track's packets are decoded as the demuxer reads
+    /// them, so a file's are held up to `packetReadAhead` ahead once the
+    /// packet queues have filled (less just after a start or a seek), and a
+    /// live stream's only as far as the source has delivered past the
+    /// picture. Closed captions come out of decoded video, so they are held a
+    /// few frames ahead at most; an external file is held whole.
+    public func subtitleCues(from start: Double, through end: Double) -> [TimedSubtitleCue] {
+        guard let session, let origin = mediaInfo?.startTime, start.isFinite, end.isFinite else { return [] }
+        return session.subtitles
+            .cues(from: origin + MediaTime.microseconds(start), through: origin + MediaTime.microseconds(end))
+            .map { TimedSubtitleCue($0, origin: origin) }
+    }
+
     public func loadExternalSubtitles(url: String) async throws {
         guard let session else {
             throw EngineError(code: .invalidState, message: "no media loaded")
@@ -256,5 +278,38 @@ public final class LumePlayer {
         case .ended: .ended
         case .failed: .failed
         }
+    }
+}
+
+/// A subtitle cue with its times in seconds on `LumePlayer.position`'s clock,
+/// as `LumePlayer.subtitleCues(from:through:)` hands it over.
+public struct TimedSubtitleCue: Sendable, Equatable, Identifiable {
+    /// The cue's own, for the session: it keeps it while held, though its end
+    /// can come earlier (the next update ends an open one). An update that
+    /// replaces it at the same start is a new cue with a new id.
+    public let id: UInt64
+    public let start: Double
+    public let end: Double
+    /// Plain display text; empty for a bitmap cue.
+    public let text: String
+    /// Bitmaps (DVB, PGS, DVD), placed as `SubtitleImage.rect` says.
+    public let images: [SubtitleImage]
+
+    public init(id: UInt64, start: Double, end: Double, text: String, images: [SubtitleImage] = []) {
+        self.id = id
+        self.start = start
+        self.end = end
+        self.text = text
+        self.images = images
+    }
+
+    init(_ cue: SubtitleCue, origin: Int64) {
+        self.init(
+            id: cue.id,
+            start: MediaTime.seconds(cue.start - origin),
+            end: MediaTime.seconds(cue.end - origin),
+            text: cue.text,
+            images: cue.images
+        )
     }
 }

@@ -69,6 +69,14 @@ public final class SubtitleStore: Sendable {
         timeline.withLock { $0.activeCues(at: time) }
     }
 
+    /// All cues showing at any moment from `start` through `end` (engine µs),
+    /// ordered by start, each with its own times. Behind the playhead the
+    /// store keeps what `SubtitleTimeline` keeps; ahead of it, only what has
+    /// been decoded so far.
+    public func cues(from start: Int64, through end: Int64) -> [SubtitleCue] {
+        timeline.withLock { $0.cues(from: start, through: end) }
+    }
+
     public var count: Int {
         timeline.withLock { $0.count }
     }
